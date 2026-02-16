@@ -1,0 +1,33 @@
+# FastAPI & Gateway
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9
+
+# Database & Cache
+sqlalchemy>=2.0.29
+psycopg2-binary>=2.9.9
+redis>=5.0.3
+
+# Trading
+ccxt>=4.2.80
+alpaca-trade-api>=3.1.1
+
+# Math & Data
+pandas>=2.2.2
+numpy>=1.26.4
+
+# AI & LLM
+httpx>=0.27.0
+llama-cpp-python>=0.2.60
+
+# Tools
+python-dotenv>=1.0.1
+pytest>=8.1.0
+pytest-asyncio>=0.23.6
+
+# Reporting
+reportlab>=4.1.0
