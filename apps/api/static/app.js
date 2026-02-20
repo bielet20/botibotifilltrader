@@ -602,34 +602,82 @@ document.addEventListener('DOMContentLoaded', () => {
             const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : '#f87171';
             const pnlFormatted = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(4);
             const sideColor = trade.side === 'buy' ? '#60a5fa' : '#f87171';
+            const sideBg = trade.side === 'buy' ? 'rgba(96,165,250,0.12)' : 'rgba(248,113,113,0.12)';
+            const borderColor = trade.side === 'buy' ? '#3b82f6' : '#ef4444';
             const total = (trade.price * trade.amount).toFixed(2);
+            const timeStr = new Date(trade.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             return `
-            <div class="trade-entry" data-id="${trade.id}" style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: background 0.2s;">
-                <div>
-                    <div style="font-weight: 600; font-size: 0.9rem;">${trade.symbol}</div>
-                    <div style="font-size: 0.75rem; color: ${sideColor}; font-weight: 700; margin-top: 2px;">${trade.side.toUpperCase()}</div>
-                    <div style="font-size: 0.7rem; color: var(--text-muted);">${trade.bot_id}</div>
+            <div class="trade-entry" data-id="${trade.id}" style="
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-left: 3px solid ${borderColor};
+                border-radius: 10px;
+                margin-bottom: 0.6rem;
+                padding: 0.85rem 1rem;
+                cursor: pointer;
+                transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+            ">
+                <!-- Header row: symbol + side badge + time -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-weight: 700; font-size: 0.95rem; letter-spacing: 0.5px;">${trade.symbol}</span>
+                        <span style="
+                            padding: 2px 8px; border-radius: 20px;
+                            font-size: 0.68rem; font-weight: 800; letter-spacing: 0.8px;
+                            background: ${sideBg}; color: ${sideColor};
+                            border: 1px solid ${borderColor}40;
+                        ">${trade.side.toUpperCase()}</span>
+                        <span style="font-size: 0.68rem; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 1px 7px; border-radius: 20px;">${trade.bot_id}</span>
+                    </div>
+                    <span style="font-size: 0.72rem; color: var(--text-muted);">${timeStr}</span>
                 </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 0.85rem;">@ $${trade.price.toLocaleString()}</div>
-                    <div style="font-size: 0.75rem; color: var(--text-muted);">Qty: ${trade.amount}</div>
-                    <div style="font-size: 0.75rem; color: var(--text-muted);">Total: $${total}</div>
+                <!-- Data grid: price / qty / total | pnl / fee -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 1rem;">
+                    <div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 2px;">Precio ejecución</div>
+                        <div style="font-size: 0.92rem; font-weight: 600;">$${trade.price.toLocaleString()}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 2px;">Total operación</div>
+                        <div style="font-size: 0.92rem; font-weight: 600;">$${total}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.72rem; color: var(--text-muted);">Cantidad: <span style="color: var(--text-secondary);">${trade.amount}</span></div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.72rem; color: var(--text-muted);">Fee: <span style="color: #facc15; font-weight: 600;">$${fee.toFixed(4)}</span></div>
+                    </div>
                 </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 0.82rem; color: ${pnlColor}; font-weight: 600;">${pnlFormatted}</div>
-                    <div style="font-size: 0.72rem; color: #facc15;">Fee: $${fee.toFixed(4)}</div>
-                </div>
-                <div style="text-align: right; color: var(--text-muted); font-size: 0.75rem;">
-                    ${new Date(trade.time).toLocaleTimeString()}
+                <!-- Footer: PnL highlighted -->
+                <div style="
+                    margin-top: 0.65rem;
+                    padding-top: 0.55rem;
+                    border-top: 1px solid rgba(255,255,255,0.06);
+                    display: flex; justify-content: space-between; align-items: center;
+                ">
+                    <span style="font-size: 0.72rem; color: var(--text-muted);">PnL Realizado</span>
+                    <span style="
+                        font-size: 0.95rem; font-weight: 800; letter-spacing: 0.3px;
+                        color: ${pnlColor};
+                        text-shadow: 0 0 12px ${pnlColor}55;
+                    ">${pnlFormatted}</span>
                 </div>
             </div>`;
         }).join('');
 
-        // Attach click events
+        // Attach click + hover events
         sidePanel.querySelectorAll('.trade-entry').forEach(entry => {
             entry.addEventListener('click', () => showTradeExplanation(entry.dataset.id));
-            entry.addEventListener('mouseenter', () => entry.style.background = 'rgba(255,255,255,0.03)');
-            entry.addEventListener('mouseleave', () => entry.style.background = '');
+            entry.addEventListener('mouseenter', () => {
+                entry.style.background = 'rgba(255,255,255,0.055)';
+                entry.style.transform = 'translateY(-1px)';
+                entry.style.boxShadow = '0 4px 20px rgba(0,0,0,0.25)';
+            });
+            entry.addEventListener('mouseleave', () => {
+                entry.style.background = 'rgba(255,255,255,0.03)';
+                entry.style.transform = '';
+                entry.style.boxShadow = '';
+            });
         });
     }
 
