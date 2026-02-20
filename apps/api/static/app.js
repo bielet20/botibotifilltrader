@@ -596,90 +596,73 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        sidePanel.innerHTML = trades.map(trade => {
+        // Add a header row
+        sidePanel.innerHTML = `
+        <div style="display: grid; grid-template-columns: 2fr 1.8fr 1fr; padding: 0 0.75rem 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 0.5rem;">
+            <div style="font-size: 0.68rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;">Operación</div>
+            <div style="font-size: 0.68rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; text-align: center;">Precio · Cantidad · Total</div>
+            <div style="font-size: 0.68rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; text-align: right;">PnL / Fee</div>
+        </div>
+        ` + trades.map(trade => {
             const pnl = trade.pnl || 0;
             const fee = trade.fee || 0;
-            const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : '#f87171';
-            const pnlFormatted = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(4);
-            const sideColor = trade.side === 'buy' ? '#60a5fa' : '#f87171';
-            const sideBg = trade.side === 'buy' ? 'rgba(96,165,250,0.12)' : 'rgba(248,113,113,0.12)';
-            const borderColor = trade.side === 'buy' ? '#3b82f6' : '#ef4444';
+            const pnlFormatted = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(3);
+            const pnlColor = pnl >= 0 ? '#34d399' : '#f87171';
+            const isSell = trade.side === 'sell';
+            const accentColor = isSell ? '#ef4444' : '#3b82f6';
+            const sideBg = isSell ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)';
             const total = (trade.price * trade.amount).toFixed(2);
-            const timeStr = new Date(trade.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const timeStr = new Date(trade.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
             return `
             <div class="trade-entry" data-id="${trade.id}" style="
-                background: rgba(255,255,255,0.03);
-                border: 1px solid rgba(255,255,255,0.08);
-                border-left: 3px solid ${borderColor};
-                border-radius: 10px;
-                margin-bottom: 0.6rem;
-                padding: 0.85rem 1rem;
-                cursor: pointer;
-                transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+                display: grid;
+                grid-template-columns: 2fr 1.8fr 1fr;
+                align-items: center;
+                padding: 0.6rem 0.75rem;
+                border-radius: 8px;
+                margin-bottom: 3px;
+                border-left: 3px solid ${accentColor};
+                background: rgba(255,255,255,0.025);
+                gap: 0.5rem;
             ">
-                <!-- Header row: symbol + side badge + time -->
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
-                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                        <span style="font-weight: 700; font-size: 0.95rem; letter-spacing: 0.5px;">${trade.symbol}</span>
-                        <span style="
-                            padding: 2px 8px; border-radius: 20px;
-                            font-size: 0.68rem; font-weight: 800; letter-spacing: 0.8px;
-                            background: ${sideBg}; color: ${sideColor};
-                            border: 1px solid ${borderColor}40;
-                        ">${trade.side.toUpperCase()}</span>
-                        <span style="font-size: 0.68rem; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 1px 7px; border-radius: 20px;">${trade.bot_id}</span>
-                    </div>
-                    <span style="font-size: 0.72rem; color: var(--text-muted);">${timeStr}</span>
-                </div>
-                <!-- Data grid: price / qty / total | pnl / fee -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 1rem;">
-                    <div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 2px;">Precio ejecución</div>
-                        <div style="font-size: 0.92rem; font-weight: 600;">$${trade.price.toLocaleString()}</div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 2px;">Total operación</div>
-                        <div style="font-size: 0.92rem; font-weight: 600;">$${total}</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.72rem; color: var(--text-muted);">Cantidad: <span style="color: var(--text-secondary);">${trade.amount}</span></div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.72rem; color: var(--text-muted);">Fee: <span style="color: #facc15; font-weight: 600;">$${fee.toFixed(4)}</span></div>
-                    </div>
-                </div>
-                <!-- Footer: PnL highlighted -->
-                <div style="
-                    margin-top: 0.65rem;
-                    padding-top: 0.55rem;
-                    border-top: 1px solid rgba(255,255,255,0.06);
-                    display: flex; justify-content: space-between; align-items: center;
-                ">
-                    <span style="font-size: 0.72rem; color: var(--text-muted);">PnL Realizado</span>
+                <!-- Col 1: side badge + symbol + bot -->
+                <div style="display: flex; align-items: center; gap: 0.5rem; min-width: 0;">
                     <span style="
-                        font-size: 0.95rem; font-weight: 800; letter-spacing: 0.3px;
-                        color: ${pnlColor};
-                        text-shadow: 0 0 12px ${pnlColor}55;
-                    ">${pnlFormatted}</span>
+                        font-size: 0.62rem; font-weight: 800; letter-spacing: 0.06em;
+                        padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+                        background: ${sideBg}; color: ${accentColor};
+                    ">${trade.side.toUpperCase()}</span>
+                    <div style="min-width: 0;">
+                        <div style="font-weight: 700; font-size: 0.82rem; white-space: nowrap;">${trade.symbol}</div>
+                        <div style="font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${trade.bot_id}</div>
+                    </div>
+                </div>
+                <!-- Col 2: price · qty · total -->
+                <div style="text-align: center; font-size: 0.78rem;">
+                    <span style="font-weight: 600;">$${trade.price.toLocaleString()}</span>
+                    <span style="color: var(--text-muted); margin: 0 3px;">×</span>
+                    <span style="color: var(--text-secondary);">${trade.amount}</span>
+                    <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 1px;">
+                        Total: <span style="color: var(--text-secondary); font-weight: 600;">$${total}</span>
+                    </div>
+                </div>
+                <!-- Col 3: PnL + fee + time -->
+                <div style="text-align: right;">
+                    <div style="font-size: 0.88rem; font-weight: 800; color: ${pnlColor};">${pnlFormatted}</div>
+                    <div style="font-size: 0.65rem; color: #facc15;">Fee $${fee.toFixed(4)}</div>
+                    <div style="font-size: 0.62rem; color: var(--text-muted);">${timeStr}</div>
                 </div>
             </div>`;
         }).join('');
 
-        // Attach click + hover events
         sidePanel.querySelectorAll('.trade-entry').forEach(entry => {
             entry.addEventListener('click', () => showTradeExplanation(entry.dataset.id));
-            entry.addEventListener('mouseenter', () => {
-                entry.style.background = 'rgba(255,255,255,0.055)';
-                entry.style.transform = 'translateY(-1px)';
-                entry.style.boxShadow = '0 4px 20px rgba(0,0,0,0.25)';
-            });
-            entry.addEventListener('mouseleave', () => {
-                entry.style.background = 'rgba(255,255,255,0.03)';
-                entry.style.transform = '';
-                entry.style.boxShadow = '';
-            });
+            entry.addEventListener('mouseenter', () => entry.style.background = 'rgba(255,255,255,0.055)');
+            entry.addEventListener('mouseleave', () => entry.style.background = 'rgba(255,255,255,0.025)');
         });
     }
+
 
     async function showTradeExplanation(tradeId) {
         const aiSummary = document.getElementById('aiMarketSummary');
