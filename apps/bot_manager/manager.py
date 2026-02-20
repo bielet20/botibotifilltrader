@@ -239,8 +239,16 @@ class BotManager:
             if bot._task:
                 bot._task.cancel()
             del self.active_bots[bot_id]
-            return True
-        return False
+
+        # Always update DB status, even if bot wasn't in active memory
+        with SessionLocal() as db:
+            bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
+            if bot_entry:
+                bot_entry.status = "stopped"
+                db.commit()
+                return True
+
+        return bool(bot)  # Return True only if was in memory but not in DB
 
     def delete_bot(self, bot_id: str):
         # 1. Stop if running
@@ -276,12 +284,19 @@ class BotManager:
         return False
 
     async def resume_bots(self):
-        print("Resuming active bots from database...")
+        print("[BotManager] Resuming active bots from database...")
         with SessionLocal() as db:
             active_db_bots = db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).all()
+            if not active_db_bots:
+                print("[BotManager] No bots to resume.")
+                return
             for db_bot in active_db_bots:
-                print(f"Resuming bot {db_bot.id}...")
-                self.start_bot(db_bot.id, db_bot.config)
+                if db_bot.id not in self.active_bots:
+                    print(f"[BotManager] Resuming bot: {db_bot.id} (strategy={db_bot.strategy})")
+                    self.start_bot(db_bot.id, db_bot.config)
+                else:
+                    print(f"[BotManager] Bot {db_bot.id} already in memory — skipping.")
+        print(f"[BotManager] {len(self.active_bots)} bot(s) running.")
 
 if __name__ == "__main__":
     async def main():

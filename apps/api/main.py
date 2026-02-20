@@ -217,9 +217,13 @@ async def start_existing_bot(bot_id: str, db: Session = Depends(get_db)):
     if bot_entry.is_archived:
         raise HTTPException(status_code=400, detail="Cannot start an archived bot. Restore it first.")
     
+    # If already running in memory, treat as success (idempotent)
+    if bot_id in bot_manager.active_bots:
+        return {"message": f"Bot {bot_id} is already running"}
+
     success = bot_manager.start_bot(bot_id, bot_entry.config)
     if not success:
-        raise HTTPException(status_code=400, detail="Bot already running or failed to start")
+        raise HTTPException(status_code=400, detail="Bot failed to start")
     return {"message": f"Bot {bot_id} started"}
 
 @app.get("/api/trades")
