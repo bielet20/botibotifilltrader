@@ -545,23 +545,16 @@ main.sidebar-collapsed {
 }
 
 .trade-entry {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--border-glass);
-    border-radius: 12px;
-    padding: 12px;
-    margin-bottom: 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    transition: all 0.2s ease;
+    border-radius: 10px;
+    margin-bottom: 0.6rem;
+    transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
     cursor: pointer;
+    overflow: hidden;
+    /* layout is driven by inline JS styles — do NOT set display here */
 }
 
 .trade-entry:hover {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: var(--accent-blue);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: var(--accent-blue) !important;
 }
 
 tr:hover {
