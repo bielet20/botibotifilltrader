@@ -10,7 +10,7 @@ from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
 from apps.engine.risk import RiskEngine
 from apps.shared.database import SessionLocal
-from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide
+from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB
 
 class BotInstance:
     def __init__(self, bot_id: str, config: Dict):
@@ -94,6 +94,11 @@ class BotInstance:
                     execution = await self.executor.execute(signal)
 
                     if execution.status != "failed":
+                        executor_type = self.config.get("executor", "paper")
+                        strategy_name = self.config.get("strategy", "ema_cross")
+                        fee_amount = 0.0
+                        pnl_amount = 0.0
+
                         if self.portfolio is not None:
                             # 5a. Paper Trading — update portfolio
                             portfolio_update = await self.portfolio.process_execution(
@@ -102,6 +107,8 @@ class BotInstance:
                                 signal.symbol
                             )
                             if portfolio_update.get("success"):
+                                fee_amount = portfolio_update.get("fee", 0.0)
+                                pnl_amount = portfolio_update.get("pnl", 0.0)
                                 with SessionLocal() as db:
                                     trade_entry = TradeDB(
                                         bot_id=self.bot_id,
@@ -109,17 +116,17 @@ class BotInstance:
                                         side=signal.side,
                                         price=execution.avg_price,
                                         amount=execution.filled_amount,
-                                        fee=portfolio_update.get("fee", 0.0),
-                                        pnl=portfolio_update.get("pnl", 0.0),
+                                        fee=fee_amount,
+                                        pnl=pnl_amount,
                                         meta=signal.meta
                                     )
                                     db.add(trade_entry)
                                     db.commit()
-                                print(f"[{self.bot_id}] Trade executed: {signal.side} {signal.symbol} | P&L: ${portfolio_update.get('pnl', 0):.2f}")
+                                print(f"[{self.bot_id}] Trade: {signal.side} {signal.symbol} | P&L: ${pnl_amount:.2f}")
                             else:
                                 print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
                         else:
-                            # 5b. Live Hyperliquid — save directly to DB
+                            # 5b. Live Hyperliquid
                             with SessionLocal() as db:
                                 trade_entry = TradeDB(
                                     bot_id=self.bot_id,
@@ -133,9 +140,68 @@ class BotInstance:
                                 )
                                 db.add(trade_entry)
                                 db.commit()
-                            print(f"[{self.bot_id}] ⚡ LIVE trade: {signal.side} {signal.symbol} @ ${execution.avg_price:,.2f} | Order #{execution.order_id}")
-                    else:
-                        print(f"[{self.bot_id}] Execution failed (live) — skipping this cycle.")
+                            print(f"[{self.bot_id}] ⚡ LIVE: {signal.side} {signal.symbol} @ ${execution.avg_price:,.2f} | Order #{execution.order_id}")
+
+                        # --- Persist to OrderLogDB (always, for audit) ---
+                        with SessionLocal() as db:
+                            order_log = OrderLogDB(
+                                bot_id=self.bot_id,
+                                symbol=signal.symbol,
+                                side=signal.side,
+                                status="closed",
+                                price=execution.avg_price,
+                                amount=signal.amount,
+                                filled_amount=execution.filled_amount,
+                                fee=fee_amount,
+                                pnl=pnl_amount,
+                                exchange_order_id=execution.order_id,
+                                strategy=strategy_name,
+                                executor=executor_type,
+                                meta=signal.meta
+                            )
+                            db.add(order_log)
+
+                            # --- Update PositionDB ---
+                            existing_pos = db.query(PositionDB).filter(
+                                PositionDB.bot_id == self.bot_id,
+                                PositionDB.symbol == signal.symbol,
+                                PositionDB.is_open == True
+                            ).first()
+
+                            if signal.side == TradeSide.BUY:
+                                if existing_pos:
+                                    # Average down the entry price
+                                    total_qty = existing_pos.quantity + execution.filled_amount
+                                    avg_price = (existing_pos.entry_price * existing_pos.quantity + execution.avg_price * execution.filled_amount) / total_qty
+                                    existing_pos.entry_price = avg_price
+                                    existing_pos.quantity = total_qty
+                                    existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                                    existing_pos.current_price = execution.avg_price
+                                else:
+                                    new_pos = PositionDB(
+                                        bot_id=self.bot_id,
+                                        symbol=signal.symbol,
+                                        side="long",
+                                        entry_price=execution.avg_price,
+                                        quantity=execution.filled_amount,
+                                        current_price=execution.avg_price,
+                                        fee_paid=fee_amount,
+                                        is_open=True
+                                    )
+                                    db.add(new_pos)
+                            elif signal.side == TradeSide.SELL and existing_pos:
+                                # Reduce or close position
+                                new_qty = existing_pos.quantity - execution.filled_amount
+                                if new_qty <= 0.0001:
+                                    existing_pos.is_open = False
+                                    existing_pos.quantity = 0
+                                else:
+                                    existing_pos.quantity = new_qty
+                                existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                                existing_pos.current_price = execution.avg_price
+                                existing_pos.unrealized_pnl = pnl_amount
+
+                            db.commit()
                 elif not risk_result.approved:
                     print(f"[{self.bot_id}] Trade rejected by risk engine: {risk_result.reason}")
                 else:

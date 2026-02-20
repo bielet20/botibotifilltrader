@@ -74,3 +74,44 @@ class TradeDB(Base):
     fee = Column(Float, default=0.0)
     pnl = Column(Float, default=0.0)
     meta = Column(JSON)
+
+class OrderLogDB(Base):
+    """Persistent log of every order sent by the system.
+    Survives restarts — used for state recovery and auditing."""
+    __tablename__ = "order_log"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    bot_id = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)    # buy / sell
+    status = Column(String(20), default="open")  # open / closed / cancelled / failed
+    price = Column(Float, nullable=False)
+    amount = Column(Float, nullable=False)
+    filled_amount = Column(Float, default=0.0)
+    fee = Column(Float, default=0.0)
+    pnl = Column(Float, default=0.0)
+    exchange_order_id = Column(String(100), nullable=True)
+    strategy = Column(String(100), nullable=True)
+    executor = Column(String(50), default="paper")  # paper / hyperliquid
+    meta = Column(JSON, default={})
+
+class PositionDB(Base):
+    """Open positions per bot+symbol. Updated on every trade.
+    Reading this table on startup lets the system know what's open."""
+    __tablename__ = "positions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    bot_id = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)         # long / short
+    entry_price = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False)
+    current_price = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, default=0.0)
+    fee_paid = Column(Float, default=0.0)
+    opened_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_open = Column(Boolean, default=True)
+    meta = Column(JSON, default={})

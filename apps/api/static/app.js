@@ -592,44 +592,44 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!sidePanel) return;
 
         if (trades.length === 0) {
-            sidePanel.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">No trades recorded yet.</div>';
+            sidePanel.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 2rem;">No hay operaciones registradas.</div>';
             return;
         }
 
-        sidePanel.innerHTML = trades.map(trade => `
-            <div class="trade-entry" data-id="${trade.id}">
-                <div class="trade-info">
-                    <div class="trade-symbol">${trade.symbol}</div>
-                    <div class="trade-details">${trade.side.toUpperCase()} @ ${trade.price.toLocaleString()}</div>
+        sidePanel.innerHTML = trades.map(trade => {
+            const pnl = trade.pnl || 0;
+            const fee = trade.fee || 0;
+            const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            const pnlSign = pnl >= 0 ? '+' : '';
+            const sideColor = trade.side === 'buy' ? '#60a5fa' : '#f87171';
+            const total = (trade.price * trade.amount).toFixed(2);
+            return `
+            <div class="trade-entry" data-id="${trade.id}" style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: background 0.2s;">
+                <div>
+                    <div style="font-weight: 600; font-size: 0.9rem;">${trade.symbol}</div>
+                    <div style="font-size: 0.75rem; color: ${sideColor}; font-weight: 700; margin-top: 2px;">${trade.side.toUpperCase()}</div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">${trade.bot_id}</div>
                 </div>
-                <div class="trade-stats">
-                    <div class="trade-amount ${trade.side}">
-                        ${trade.amount}
-                    </div>
-                    <div class="trade-time">
-                        ${new Date(trade.time).toLocaleTimeString()}
-                    </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 0.85rem;">@ $${trade.price.toLocaleString()}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Qty: ${trade.amount}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Total: $${total}</div>
                 </div>
-            </div>
-        `).join('');
+                <div style="text-align: right;">
+                    <div style="font-size: 0.82rem; color: ${pnlColor}; font-weight: 600;">${pnlSign}$${Math.abs(pnl).toFixed(4)}</div>
+                    <div style="font-size: 0.72rem; color: #facc15;">Fee: $${fee.toFixed(4)}</div>
+                </div>
+                <div style="text-align: right; color: var(--text-muted); font-size: 0.75rem;">
+                    ${new Date(trade.time).toLocaleTimeString()}
+                </div>
+            </div>`;
+        }).join('');
 
-        // Attach hover events to new elements
+        // Attach click events
         sidePanel.querySelectorAll('.trade-entry').forEach(entry => {
-            entry.addEventListener('mouseenter', (e) => {
-                const symbol = entry.querySelector('.trade-symbol').textContent;
-                const mockData = Array.from({ length: 20 }, () => Math.random() * 100 + 50000);
-                showPreview(e, `${symbol} Trend`, mockData, `Volatility: 1.2% | Volume: 4.5M`);
-            });
-            entry.addEventListener('mouseleave', () => {
-                if (typeof hidePreview === 'function') hidePreview();
-                else if (previewPopup) previewPopup.style.display = 'none';
-            });
-            entry.addEventListener('mousemove', (e) => {
-                if (previewPopup && previewPopup.style.display === 'block') {
-                    updatePreviewPosition(e);
-                }
-            });
             entry.addEventListener('click', () => showTradeExplanation(entry.dataset.id));
+            entry.addEventListener('mouseenter', () => entry.style.background = 'rgba(255,255,255,0.03)');
+            entry.addEventListener('mouseleave', () => entry.style.background = '');
         });
     }
 
@@ -840,17 +840,77 @@ document.addEventListener('DOMContentLoaded', () => {
     if (botTableBody) botTableBody.addEventListener('click', handleBotActions);
     if (vaultTableBody) vaultTableBody.addEventListener('click', handleBotActions);
 
-    // Mock live data for stats (keeping visual flair)
-    setInterval(() => {
-        const pnlValue = document.querySelector('.stat-card:nth-child(2) .stat-value');
-        if (pnlValue) {
-            const current = parseFloat(pnlValue.textContent.replace('+$', '').replace(',', ''));
-            const change = (Math.random() - 0.4) * 10;
-            const newVal = current + change;
-            pnlValue.textContent = (newVal >= 0 ? '+$' : '-$') + Math.abs(newVal).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            pnlValue.style.color = newVal >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+    // -- Live Stats Fetch --
+    async function fetchStats() {
+        try {
+            const res = await fetch('/api/stats');
+            const s = await res.json();
+
+            const pnlEl = document.getElementById('statTotalPnl');
+            const feesEl = document.getElementById('statTotalFees');
+            const winRateEl = document.getElementById('statWinRate');
+            const winRateBar = document.getElementById('statWinRateBar');
+            const openPosEl = document.getElementById('statOpenPositions');
+            const openOrdEl = document.getElementById('statOpenOrders');
+            const winLossEl = document.getElementById('statWinLoss');
+            const volEl = document.getElementById('statTotalVolume');
+
+            if (pnlEl) {
+                pnlEl.textContent = `${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl.toFixed(2)}`;
+                pnlEl.style.color = s.total_pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            }
+            if (feesEl) feesEl.textContent = `$${s.total_fees.toFixed(4)}`;
+            if (winRateEl) winRateEl.textContent = `${s.win_rate}%`;
+            if (winRateBar) winRateBar.style.width = `${s.win_rate}%`;
+            if (openPosEl) openPosEl.textContent = s.open_positions;
+            if (openOrdEl) openOrdEl.textContent = `Órdenes en log: ${s.open_orders + s.total_trades}`;
+            if (winLossEl) winLossEl.textContent = `${s.wins} wins / ${s.losses} losses`;
+            if (volEl) volEl.textContent = `Volumen: $${(s.total_volume).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+        } catch (e) {
+            console.error('fetchStats error:', e);
         }
-    }, 3000);
+    }
+
+    // -- Open Positions Fetch --
+    async function fetchPositions() {
+        try {
+            const res = await fetch('/api/positions');
+            const positions = await res.json();
+
+            const tbody = document.getElementById('openPositionsTableBody');
+            const badge = document.getElementById('openPositionsBadge');
+
+            if (badge) badge.textContent = `${positions.length} abiertas`;
+
+            if (!tbody) return;
+            if (positions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay posiciones abiertas</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = positions.map(p => {
+                const upnl = p.unrealized_pnl || 0;
+                const upnlColor = upnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+                const openedAt = new Date(p.opened_at).toLocaleString();
+                return `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;" 
+                    onmouseenter="this.style.background='rgba(255,255,255,0.03)'" 
+                    onmouseleave="this.style.background=''">
+                    <td style="padding: 0.75rem; font-size: 0.83rem; color: var(--accent-blue);">${p.bot_id}</td>
+                    <td style="padding: 0.75rem; font-weight: 600;">${p.symbol}</td>
+                    <td style="padding: 0.75rem; color: ${p.side === 'long' ? '#60a5fa' : '#f87171'}; font-weight: 700;">${p.side.toUpperCase()}</td>
+                    <td style="padding: 0.75rem;">$${(p.entry_price || 0).toLocaleString()}</td>
+                    <td style="padding: 0.75rem; color: var(--text-secondary);">$${(p.current_price || p.entry_price || 0).toLocaleString()}</td>
+                    <td style="padding: 0.75rem;">${p.quantity}</td>
+                    <td style="padding: 0.75rem; font-weight: 600; color: ${upnlColor};">${upnl >= 0 ? '+' : ''}$${upnl.toFixed(4)}</td>
+                    <td style="padding: 0.75rem; color: #facc15;">$${(p.fee_paid || 0).toFixed(4)}</td>
+                    <td style="padding: 0.75rem; color: var(--text-muted); font-size: 0.75rem;">${openedAt}</td>
+                </tr>`;
+            }).join('');
+        } catch (e) {
+            console.error('fetchPositions error:', e);
+        }
+    }
 
     // --- REFINEMENTS: SPARKLINES & PREVIEWS ---
 
@@ -1013,6 +1073,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial load and periodic refresh
     fetchBots();
     fetchTrades();
+    fetchStats();
+    fetchPositions();
     setInterval(fetchBots, 5000);
     setInterval(fetchTrades, 10000);
+    setInterval(fetchStats, 10000);
+    setInterval(fetchPositions, 10000);
 });

@@ -17,17 +17,16 @@ from apps.bot_manager.manager import BotManager
 from apps.ai_engine.engine import AIEngine
 from apps.reporting_engine.reporting import ReportingEngine, calculate_metrics
 from apps.shared.database import init_db, get_db
-from apps.shared.models import BotDB, TradeDB, BotStatus
+from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB
 from apps.engine.paper_portfolio import PaperPortfolioDB
 
 app = FastAPI(title="Trading Platform API Gateway")
 
-# Initialize DB on start
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    # Resume bots in background
-    await bot_manager.resume_bots()
+# Initialize singletons BEFORE startup event so they are available
+from datetime import datetime, timezone
+import time as _time
+
+_startup_time = _time.time()
 
 # Singleton-like instances
 risk_engine = RiskEngine()
@@ -35,11 +34,130 @@ bot_manager = BotManager()
 ai_engine = AIEngine()
 reporting_engine = ReportingEngine()
 
-@app.get("/health")
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    await bot_manager.resume_bots()
+
+@app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
-    # Verify DB connection
     db_ok = db.execute(text("SELECT 1")).fetchone() is not None
-    return {"status": "ok", "db": db_ok, "version": "0.1.0"}
+    running_bots = db.query(BotDB).filter(BotDB.status == "running").count()
+    uptime_s = int(_time.time() - _startup_time)
+    h, rem = divmod(uptime_s, 3600)
+    m, s = divmod(rem, 60)
+    return {
+        "status": "ok",
+        "db": db_ok,
+        "version": "1.2.0",
+        "uptime": f"{h}h {m}m {s}s",
+        "running_bots": running_bots,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/api/strategies")
+async def list_strategies():
+    return [
+        {
+            "id": "ema_cross",
+            "name": "EMA Cross",
+            "description": "Genera señales cuando la media móvil rápida cruza la lenta.",
+            "params": [{"key": "fast_ema", "default": 9}, {"key": "slow_ema", "default": 21}]
+        },
+        {
+            "id": "technical_pro",
+            "name": "Technical Pro (RSI/MACD/Fib)",
+            "description": "Combinación de RSI, MACD y niveles de Fibonacci.",
+            "params": []
+        },
+        {
+            "id": "algo_expert",
+            "name": "AlgoExpert",
+            "description": "EMA + RSI + ATR + VWAP multi-confirmación.",
+            "params": []
+        },
+        {
+            "id": "dynamic_reinvest",
+            "name": "Dynamic Reinvestment",
+            "description": "Reinvierte las ganancias automáticamente con un take profit configurable.",
+            "params": [{"key": "take_profit_pct", "default": 0.02}]
+        },
+        {
+            "id": "grid_trading",
+            "name": "Grid Trading",
+            "description": "Compra barato y vende caro dentro de un rango de precio con rejillas.",
+            "params": [
+                {"key": "upper_limit", "default": 70000},
+                {"key": "lower_limit", "default": 60000},
+                {"key": "num_grids", "default": 10}
+            ]
+        }
+    ]
+
+@app.get("/api/stats")
+async def get_stats(db: Session = Depends(get_db)):
+    trades = db.query(TradeDB).all()
+    total_trades = len(trades)
+    total_fees = sum(t.fee or 0 for t in trades)
+    total_pnl = sum(t.pnl or 0 for t in trades)
+    total_volume = sum((t.price or 0) * (t.amount or 0) for t in trades)
+    wins = sum(1 for t in trades if (t.pnl or 0) > 0)
+    win_rate = round((wins / total_trades * 100), 2) if total_trades > 0 else 0
+    open_positions = db.query(PositionDB).filter(PositionDB.is_open == True).count()
+    open_orders = db.query(OrderLogDB).filter(OrderLogDB.status == "open").count()
+    return {
+        "total_trades": total_trades,
+        "total_fees": round(total_fees, 4),
+        "total_pnl": round(total_pnl, 4),
+        "total_volume": round(total_volume, 2),
+        "win_rate": win_rate,
+        "wins": wins,
+        "losses": total_trades - wins,
+        "open_positions": open_positions,
+        "open_orders": open_orders
+    }
+
+@app.get("/api/positions")
+async def get_positions(db: Session = Depends(get_db)):
+    positions = db.query(PositionDB).filter(PositionDB.is_open == True).order_by(PositionDB.opened_at.desc()).all()
+    result = []
+    for p in positions:
+        result.append({
+            "id": p.id,
+            "bot_id": p.bot_id,
+            "symbol": p.symbol,
+            "side": p.side,
+            "entry_price": p.entry_price,
+            "quantity": p.quantity,
+            "current_price": p.current_price,
+            "unrealized_pnl": round(p.unrealized_pnl or 0, 4),
+            "fee_paid": round(p.fee_paid or 0, 4),
+            "opened_at": p.opened_at
+        })
+    return result
+
+@app.get("/api/orders")
+async def get_order_log(limit: int = 100, db: Session = Depends(get_db)):
+    orders = db.query(OrderLogDB).order_by(OrderLogDB.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": o.id,
+            "bot_id": o.bot_id,
+            "symbol": o.symbol,
+            "side": o.side,
+            "status": o.status,
+            "price": o.price,
+            "amount": o.amount,
+            "filled_amount": o.filled_amount,
+            "fee": round(o.fee or 0, 6),
+            "pnl": round(o.pnl or 0, 4),
+            "strategy": o.strategy,
+            "executor": o.executor,
+            "created_at": o.created_at,
+            "updated_at": o.updated_at
+        }
+        for o in orders
+    ]
 
 @app.post("/risk/kill-switch")
 async def activate_kill_switch():
