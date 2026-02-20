@@ -599,8 +599,8 @@ document.addEventListener('DOMContentLoaded', () => {
         sidePanel.innerHTML = trades.map(trade => {
             const pnl = trade.pnl || 0;
             const fee = trade.fee || 0;
-            const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
-            const pnlSign = pnl >= 0 ? '+' : '';
+            const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : '#f87171';
+            const pnlFormatted = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(4);
             const sideColor = trade.side === 'buy' ? '#60a5fa' : '#f87171';
             const total = (trade.price * trade.amount).toFixed(2);
             return `
@@ -616,7 +616,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="font-size: 0.75rem; color: var(--text-muted);">Total: $${total}</div>
                 </div>
                 <div style="text-align: right;">
-                    <div style="font-size: 0.82rem; color: ${pnlColor}; font-weight: 600;">${pnlSign}$${Math.abs(pnl).toFixed(4)}</div>
+                    <div style="font-size: 0.82rem; color: ${pnlColor}; font-weight: 600;">${pnlFormatted}</div>
                     <div style="font-size: 0.72rem; color: #facc15;">Fee: $${fee.toFixed(4)}</div>
                 </div>
                 <div style="text-align: right; color: var(--text-muted); font-size: 0.75rem;">
