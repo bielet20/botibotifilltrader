@@ -1,11 +1,19 @@
 import ccxt.async_support as ccxt
 import asyncio
+import os
 from typing import Dict, Any
 
 class MarketDataEngine:
     def __init__(self, exchange_id: str = 'binance'):
         self.exchange_class = getattr(ccxt, exchange_id)
         self.exchange = self.exchange_class()
+        
+        # Soporte para modo sandbox/testnet si está configurado en el entorno
+        if exchange_id == 'hyperliquid':
+            use_testnet = os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"
+            if use_testnet:
+                self.exchange.set_sandbox_mode(True)
+        
         self.tickers = {}
 
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:

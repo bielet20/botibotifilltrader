@@ -15,6 +15,8 @@ class PaperPortfolioDB(Base):
     positions = Column(JSON, default={})
     total_equity = Column(Float, default=10000.0)
     realized_pnl = Column(Float, default=0.0)
+    saved_profits = Column(Float, default=0.0) # Profits stored in the 'vault'
+    savings_ratio = Column(Float, default=0.2) # 20% to savings by default
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -54,6 +56,8 @@ class PaperTradingPortfolio:
             self.positions = portfolio.positions or {}
             self.total_equity = portfolio.total_equity
             self.realized_pnl = portfolio.realized_pnl
+            self.saved_profits = portfolio.saved_profits or 0.0
+            self.savings_ratio = portfolio.savings_ratio or 0.2
     
     async def process_execution(self, execution: ExecutionResult, signal_side: TradeSide, symbol: str) -> Dict:
         """
@@ -91,9 +95,9 @@ class PaperTradingPortfolio:
             current_amount = self.positions[symbol]["amount"]
             current_avg_price = self.positions[symbol]["avg_price"]
             
-            # Calcular nuevo precio promedio
+            # Calcular nuevo precio promedio (incluyendo comisión en el coste)
             new_amount = current_amount + fill_amount
-            new_avg_price = ((current_amount * current_avg_price) + (fill_amount * fill_price)) / new_amount
+            new_avg_price = ((current_amount * current_avg_price) + total_cost) / new_amount
             
             self.positions[symbol] = {
                 "amount": new_amount,
@@ -108,12 +112,22 @@ class PaperTradingPortfolio:
                 print(f"[Portfolio] WARNING: Insufficient position to sell")
                 return {"success": False, "reason": "insufficient_position"}
             
-            revenue = trade_value - fee
-            self.cash_balance += revenue
-            
             # Calcular P&L realizado
             avg_cost = self.positions[symbol]["avg_price"]
             pnl = (fill_price - avg_cost) * fill_amount - fee
+            revenue = trade_value - fee
+            
+            # Repartir P&L según el savings_ratio
+            if pnl > 0:
+                to_save = pnl * self.savings_ratio
+                to_reinvest = pnl - to_save
+                self.saved_profits += to_save
+                self.cash_balance += (revenue - to_save) # revenue ya tiene el trade_value - fee
+                print(f"[Portfolio] Profit split: Save ${to_save:.2f} | Reinvest ${to_reinvest:.2f}")
+            else:
+                # Las pérdidas se restan del cash disponible para operar
+                self.cash_balance += revenue
+            
             self.realized_pnl += pnl
             
             # Reducir posición
@@ -157,6 +171,8 @@ class PaperTradingPortfolio:
                 portfolio.positions = self.positions
                 portfolio.total_equity = self.total_equity
                 portfolio.realized_pnl = self.realized_pnl
+                portfolio.saved_profits = self.saved_profits
+                portfolio.savings_ratio = self.savings_ratio
                 portfolio.updated_at = datetime.utcnow()
                 db.commit()
     
@@ -167,5 +183,7 @@ class PaperTradingPortfolio:
             "cash_balance": self.cash_balance,
             "positions": self.positions,
             "total_equity": self.total_equity,
-            "realized_pnl": self.realized_pnl
+            "realized_pnl": self.realized_pnl,
+            "saved_profits": self.saved_profits,
+            "total_profits": self.realized_pnl + self.saved_profits # Total profit generated
         }

@@ -49,23 +49,23 @@
         <div class="nav-links">
             <a href="#" class="nav-link active" data-tab="overview">
                 <i data-lucide="layout-dashboard"></i>
-                <span>Overview</span>
+                <span>General</span>
             </a>
             <a href="#" class="nav-link" data-tab="bots">
                 <i data-lucide="bot"></i>
-                <span>Bots</span>
+                <span>Mis Bots</span>
             </a>
             <a href="#" class="nav-link" data-tab="vault">
                 <i data-lucide="archive"></i>
-                <span>Vault</span>
+                <span>Cápsula</span>
             </a>
             <a href="#" class="nav-link" data-tab="strategies">
                 <i data-lucide="component"></i>
-                <span>Strategies</span>
+                <span>Estrategias</span>
             </a>
             <a href="#" class="nav-link" data-tab="comparison">
                 <i data-lucide="arrow-left-right"></i>
-                <span>Comparison</span>
+                <span>Comparador</span>
             </a>
             <a href="#" class="nav-link" data-tab="backtesting">
                 <i data-lucide="history"></i>
@@ -77,9 +77,9 @@
     <!-- Main Dashboard -->
     <main>
         <div class="section-info">
-            <h1 id="sectionTitle">Market Overview</h1>
-            <p id="sectionSubtitle" style="color: var(--text-secondary); font-size: 0.9rem;">Real-time institutional
-                trading performance and monitoring.</p>
+            <h1 id="sectionTitle">Inteligencia de Mercado</h1>
+            <p id="sectionSubtitle">Monitorización institutional de activos y rendimiento algorítmico en tiempo real.
+            </p>
         </div>
         <div class="dashboard-container">
 
@@ -88,7 +88,7 @@
                 <div class="dashboard-grid">
                     <!-- Stats -->
                     <div class="stat-card glass">
-                        <span class="stat-label">Portfolio Value</span>
+                        <span class="stat-label">Valor Portfolio</span>
                         <span class="stat-value">$2,542,100.00</span>
                         <div style="width: 100%; height: 30px; margin-top: 5px;">
                             <canvas id="portfolioSparkline"></canvas>
@@ -96,18 +96,18 @@
                         <span style="color: var(--accent-emerald); font-size: 0.8rem;">+4.2% (24h)</span>
                     </div>
                     <div class="stat-card glass">
-                        <span class="stat-label">Daily PnL</span>
+                        <span class="stat-label">PnL Diario</span>
                         <span class="stat-value" style="color: var(--accent-emerald);">+$12,500.42</span>
                         <div style="width: 100%; height: 30px; margin-top: 5px;">
                             <canvas id="pnlSparkline"></canvas>
                         </div>
                     </div>
                     <div class="stat-card glass">
-                        <span class="stat-label">Active Bots</span>
+                        <span class="stat-label">Bots Activos</span>
                         <span class="stat-value">12 / 15</span>
                     </div>
                     <div class="stat-card glass">
-                        <span class="stat-label">Win Rate</span>
+                        <span class="stat-label">Tasa de Éxito</span>
                         <span class="stat-value">68%</span>
                         <div
                             style="width: 100%; height: 4px; background: var(--bg-glass); border-radius: 2px; margin-top: 4px;">
@@ -117,401 +117,431 @@
                         </div>
                     </div>
 
-                    <!-- Main Chart Area -->
+                    <!-- Gráfico Principal -->
                     <div class="main-chart-container glass">
-                        <h2>Performance Overview</h2>
+                        <h2>Rendimiento General</h2>
                         <div style="width: 100%; height: 300px; position: relative;">
                             <canvas id="performanceChart"></canvas>
                         </div>
                     </div>
 
-                    <!-- Side Feed -->
-                    <div class="side-panel">
-                        <!-- AI Insight Card -->
-                        <div class="glass"
-                            style="padding: 1.5rem; margin-bottom: 1.5rem; border-left: 4px solid var(--accent-blue);">
-                            <h2
-                                style="margin-bottom: 0.75rem; color: var(--accent-blue); display: flex; align-items: center; gap: 8px;">
-                                <i data-lucide="brain"></i> AI Intelligence
-                            </h2>
-                            <p id="aiMarketSummary"
-                                style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.4;">
-                                Analyzing live market data... Our local model is currently monitoring 12 active bots.
-                            </p>
+                    <!-- Inteligencia Artificial -->
+                    <div class="glass ai-card"
+                        style="padding: 1.5rem; margin-bottom: 1.5rem; border-left: 4px solid var(--accent-blue);">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 0.5rem;">
+                            <div class="pulse-icon"></div>
+                            <h2 style="margin: 0; color: var(--accent-blue); font-size: 1rem;">NÚCLEO DE IA</h2>
                         </div>
+                        <p id="aiMarketSummary"
+                            style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                            Analizando mercados... La red neuronal está supervisando activamente 12 bots para optimizar
+                            el rendimiento.
+                        </p>
+                    </div>
 
-                        <div class="glass" style="margin-bottom: 1.5rem;">
-                            <div class="glass-header">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <h2 style="margin: 0;">Recent Trades</h2>
-                                    <div style="display: flex; gap: 8px;">
-                                        <button onclick="window.location.href='/api/reports/pdf'" class="glass"
-                                            style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--accent-blue); color: var(--accent-blue);">PDF</button>
-                                        <button onclick="window.location.href='/api/reports/json'" class="glass"
-                                            style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--text-secondary);">JSON</button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="glass-content" id="recentTradesContent">
-                                <div style="display: flex; flex-direction: column; gap: 1rem;">
-                                    <!-- Trades feed script will target this div or we can inject directly into #recentTradesContent -->
+                    <div class="glass" style="margin-bottom: 1.5rem;">
+                        <div class="glass-header">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0;">Últimas Operaciones</h2>
+                                <div style="display: flex; gap: 8px;">
+                                    <button onclick="window.location.href='/api/reports/pdf'" class="glass"
+                                        style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--accent-blue); color: var(--accent-blue);">PDF</button>
+                                    <button onclick="window.location.href='/api/reports/json'" class="glass"
+                                        style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--text-secondary);">JSON</button>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- BOTS SECTION -->
-            <section id="bots" class="tab-content">
-                <div class="bot-list glass">
-                    <div class="glass-header">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <h2 style="margin: 0;">Active Algorithmic Bots</h2>
-                            <div style="display: flex; gap: 1rem;">
-                                <button class="glass view-options-btn" data-target="bots">
-                                    <i data-lucide="eye"></i> Fields
-                                </button>
-                                <button id="createBotBtn" class="glass"
-                                    style="padding: 8px 16px; border: 1px solid var(--accent-blue); color: var(--accent-blue); cursor: pointer;">+
-                                    Create New Bot</button>
+                        <div class="glass-content" id="recentTradesContent">
+                            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                                <!-- Trades feed script will target this div or we can inject directly into #recentTradesContent -->
                             </div>
-                        </div>
-                    </div>
-                    <div class="glass-content">
-                        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                            <thead>
-                                <tr
-                                    style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                    <th style="padding: 1rem;">Bot ID</th>
-                                    <th style="padding: 1rem;">Bot Name</th>
-                                    <th style="padding: 1rem;">Strategy</th>
-                                    <th style="padding: 1rem;">Status</th>
-                                    <th style="padding: 1rem;">Allocation</th>
-                                    <th style="padding: 1rem;">PnL</th>
-                                    <th style="padding: 1rem;">Uptime</th>
-                                    <th style="padding: 1rem;">Win Rate</th>
-                                    <th style="padding: 1rem; text-align: right;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="botTableBody">
-                                <!-- Injected via app.js -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
-
-            <!-- VAULT SECTION -->
-            <section id="vault" class="tab-content">
-                <header class="section-header" style="margin-bottom: 1.5rem;">
-                    <h2 style="margin: 0;">Bot Vault</h2>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Previously
-                        configured bots saved for later reuse.</p>
-                </header>
-
-                <div class="bot-list glass">
-                    <div class="glass-content">
-                        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                            <thead>
-                                <tr
-                                    style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                    <th style="padding: 1rem;">Bot ID</th>
-                                    <th style="padding: 1rem;">Strategy</th>
-                                    <th style="padding: 1rem;">Allocation</th>
-                                    <th style="padding: 1rem;">Last Status</th>
-                                    <th style="padding: 1rem; text-align: right;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="vaultTableBody">
-                                <!-- Injected via app.js -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
-
-            <!-- COMPARISON SECTION -->
-            <section id="comparison" class="tab-content">
-                <header class="section-header" style="margin-bottom: 2rem;">
-                    <h2 style="margin: 0;">Independent Comparison</h2>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Compare two assets
-                        side-by-side and launch bots directly.</p>
-                </header>
-
-                <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr; gap: 2rem;">
-                    <div class="glass" style="padding: 2rem;">
-                        <h3 style="margin-bottom: 1.5rem; color: var(--accent-blue);">Asset A</h3>
-                        <div class="form-group" style="margin-bottom: 1.5rem;">
-                            <label>Symbol</label>
-                            <input type="text" id="compareSymbolA" class="form-control" value="BTC/USDT">
-                        </div>
-                        <div id="compareResultA" class="compare-result">
-                            <div class="stat-value" id="comparePriceA">---</div>
-                            <div class="stat-label">Last Price</div>
-                        </div>
-                        <button class="glass launch-btn" data-symbol-id="compareSymbolA"
-                            style="width: 100%; margin-top: 2rem; border-color: var(--accent-blue); color: var(--accent-blue);">Launch
-                            Bot A</button>
-                    </div>
-
-                    <div class="glass" style="padding: 2rem;">
-                        <h3 style="margin-bottom: 1.5rem; color: var(--accent-emerald);">Asset B</h3>
-                        <div class="form-group" style="margin-bottom: 1.5rem;">
-                            <label>Symbol</label>
-                            <input type="text" id="compareSymbolB" class="form-control" value="ETH/USDT">
-                        </div>
-                        <div id="compareResultB" class="compare-result">
-                            <div class="stat-value" id="comparePriceB">---</div>
-                            <div class="stat-label">Last Price</div>
-                        </div>
-                        <button class="glass launch-btn" data-symbol-id="compareSymbolB"
-                            style="width: 100%; margin-top: 2rem; border-color: var(--accent-emerald); color: var(--accent-emerald);">Launch
-                            Bot B</button>
-                    </div>
-                </div>
-
-                <div class="glass" style="padding: 2rem; margin-top: 2rem;">
-                    <button id="runComparisonBtn" class="kill-switch"
-                        style="width: 100%; background: var(--accent-blue);">EXECUTE SIDE-BY-SIDE ANALYSIS</button>
-                </div>
-            </section>
-
-            <!-- STRATEGIES SECTION -->
-            <section id="strategies" class="tab-content">
-                <header class="section-header" style="margin-bottom: 1.5rem;">
-                    <h2 style="margin: 0;">Strategy Configuration</h2>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Configure the core
-                        parameters for your trading algorithms.</p>
-                </header>
-
-                <div class="dashboard-grid"
-                    style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
-                    <!-- EMA Cross Card -->
-                    <div class="glass" style="padding: 1.5rem;">
-                        <div
-                            style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                            <div>
-                                <h3 style="margin: 0; color: var(--accent-blue);">EMA Cross</h3>
-                                <span style="font-size: 0.7rem; color: var(--text-muted);">Trend
-                                    Following</span>
-                            </div>
-                            <i data-lucide="activity" style="color: var(--accent-blue);"></i>
-                        </div>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label style="font-size: 0.75rem;">Fast EMA Period</label>
-                            <input type="number" class="form-control" value="9" id="stratEmaFast">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label style="font-size: 0.75rem;">Slow EMA Period</label>
-                            <input type="number" class="form-control" value="21" id="stratEmaSlow">
-                        </div>
-                        <button class="glass"
-                            style="width: 100%; border-color: var(--accent-blue); color: var(--accent-blue);">Update
-                            Parameters</button>
-                    </div>
-
-                    <!-- Technical Pro Card -->
-                    <div class="glass" style="padding: 1.5rem;">
-                        <div
-                            style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                            <div>
-                                <h3 style="margin: 0; color: var(--accent-emerald);">Technical Pro</h3>
-                                <span style="font-size: 0.7rem; color: var(--text-muted);">Multi-factor
-                                    Analysis</span>
-                            </div>
-                            <i data-lucide="brain" style="color: var(--accent-emerald);"></i>
-                        </div>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label style="font-size: 0.75rem;">RSI Period</label>
-                            <input type="number" class="form-control" value="14" id="stratTechRsi">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label style="font-size: 0.75rem;">MACD Fast</label>
-                            <input type="number" class="form-control" value="12" id="stratTechMacd">
-                        </div>
-                        <button class="glass"
-                            style="width: 100%; border-color: var(--accent-emerald); color: var(--accent-emerald);">Update
-                            Parameters</button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- BACKTESTING SECTION -->
-            <section id="backtesting" class="tab-content">
-                <div class="backtest-container glass">
-                    <div class="glass-header">
-                        <h2 style="margin: 0;">Historical Simulation Sandbox</h2>
-                    </div>
-                    <div class="glass-content">
-                        <div class="form-group">
-                            <label>Trading Pair</label>
-                            <input type="text" id="btSymbol" class="form-control" value="BTC/USDT">
-                        </div>
-                        <div class="form-group">
-                            <label>Timeframe</label>
-                            <select id="btTimeframe" class="form-control">
-                                <option value="15m">15 Minutes</option>
-                                <option value="1h" selected>1 Hour</option>
-                                <option value="4h">4 Hours</option>
-                                <option value="1d">1 Day</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Algorithm</label>
-                            <select id="btStrategy" class="form-control">
-                                <option value="ema_cross">EMA Cross (5/20)</option>
-                                <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
-                            </select>
-                        </div>
-                        <button id="runBacktestBtn">RUN HISTORICAL SIMULATION</button>
-
-                        <div id="backtestResults" style="margin-top: 2rem; display: none;">
-                            <h3>Simulation Metrics</h3>
-                            <div id="btMetrics" class="dashboard-grid"
-                                style="grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;"></div>
-
-                            <h3>Equity Curve</h3>
-                            <div style="width: 100%; height: 300px; margin-bottom: 2rem;">
-                                <canvas id="backtestChart"></canvas>
-                            </div>
-
-                            <h3>Simulation Trades</h3>
-                            <div id="btTrades"></div>
                         </div>
                     </div>
                 </div>
-            </section>
+        </div>
+        </section>
 
-            <!-- SETTINGS SECTION -->
-            <section id="settings" class="tab-content">
-                <div class="glass">
-                    <div class="glass-header">
-                        <h2 style="margin: 0;">Platform Settings</h2>
-                    </div>
-                    <div class="glass-content">
-                        <p style="color: var(--text-secondary); margin-bottom: 2rem;">Manage your connection to
-                            exchanges
-                            and global risk parameters.</p>
-
-                        <div style="max-width: 600px;">
-                            <h3
-                                style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
-                                <i data-lucide="key" style="width: 16px;"></i> API Credentials
-                            </h3>
-                            <div class="form-group" style="margin-bottom: 1.5rem;">
-                                <label>Exchange Selection</label>
-                                <select class="form-control">
-                                    <option>Binance (Spot)</option>
-                                    <option>Kraken</option>
-                                    <option>Coinbase Pro</option>
-                                </select>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 1rem;">
-                                <label>API Key</label>
-                                <input type="password" class="form-control" value="************************"
-                                    placeholder="Enter API Key">
-                            </div>
-                            <div class="form-group" style="margin-bottom: 2rem;">
-                                <label>Secret Key</label>
-                                <input type="password" class="form-control" value="************************"
-                                    placeholder="Enter Secret Key">
-                            </div>
-
-                            <h3
-                                style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
-                                <i data-lucide="shield-alert" style="width: 16px;"></i> Global Risk Limits
-                            </h3>
-                            <div class="form-group" style="margin-bottom: 1rem;">
-                                <label>Max Global Drawdown (%)</label>
-                                <input type="number" class="form-control" value="10">
-                            </div>
-                            <div class="form-group" style="margin-bottom: 2rem;">
-                                <label>Emergency Contact (Webhook)</label>
-                                <input type="text" class="form-control"
-                                    placeholder="https://discord.com/api/webhooks/...">
-                            </div>
-
-                            <button class="glass"
-                                style="padding: 12px 24px; background: var(--accent-blue); color: white; border: none; font-weight: 600; cursor: pointer;">
-                                SAVE CONFIGURATION
+        <!-- BOTS SECTION -->
+        <section id="bots" class="tab-content">
+            <div class="bot-list glass">
+                <div class="glass-header">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2 style="margin: 0;">Flota de Bots Algorítmicos</h2>
+                        <div style="display: flex; gap: 1rem;">
+                            <button class="glass view-options-btn" data-target="bots">
+                                <i data-lucide="eye"></i> Columnas
                             </button>
+                            <button id="createBotBtn" class="glass"
+                                style="padding: 8px 16px; border: 1px solid var(--accent-blue); color: var(--accent-blue); cursor: pointer;">+
+                                Create New Bot</button>
                         </div>
                     </div>
                 </div>
-            </section>
+                <div class="glass-content">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                        <thead>
+                            <tr
+                                style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <th style="padding: 1rem;">ID Bot</th>
+                                <th style="padding: 1rem;">Nombre</th>
+                                <th style="padding: 1rem;">Estrategia</th>
+                                <th style="padding: 1rem;">Estado</th>
+                                <th style="padding: 1rem;">Asignación</th>
+                                <th style="padding: 1rem;">PnL Realizado</th>
+                                <th style="padding: 1rem;">Uptime</th>
+                                <th style="padding: 1rem;">Éxito</th>
+                                <th style="padding: 1rem; text-align: right;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="botTableBody">
+                            <!-- Injected via app.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
 
-            <!-- Create Bot Modal -->
-            <div id="createBotModal" class="modal-overlay" style="display: none;">
-                <div class="modal-content glass">
+        <!-- VAULT SECTION -->
+        <section id="vault" class="tab-content">
+            <header class="section-header" style="margin-bottom: 1.5rem;">
+                <h2 style="margin: 0;">Cápsula de Seguridad</h2>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Bots archivados y
+                    configuraciones guardadas para su reutilización inmediata.</p>
+            </header>
+
+            <div class="bot-list glass">
+                <div class="glass-content">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                        <thead>
+                            <tr
+                                style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <th style="padding: 1rem;">Bot ID</th>
+                                <th style="padding: 1rem;">Strategy</th>
+                                <th style="padding: 1rem;">Allocation</th>
+                                <th style="padding: 1rem;">Last Status</th>
+                                <th style="padding: 1rem; text-align: right;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="vaultTableBody">
+                            <!-- Injected via app.js -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- COMPARISON SECTION -->
+        <section id="comparison" class="tab-content">
+            <header class="section-header" style="margin-bottom: 2rem;">
+                <h2 style="margin: 0;">Independent Comparison</h2>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Compare two assets
+                    side-by-side and launch bots directly.</p>
+            </header>
+
+            <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr; gap: 2rem;">
+                <div class="glass" style="padding: 2rem;">
+                    <h3 style="margin-bottom: 1.5rem; color: var(--accent-blue);">Asset A</h3>
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label>Symbol</label>
+                        <input type="text" id="compareSymbolA" class="form-control" value="BTC/USDT">
+                    </div>
+                    <div id="compareResultA" class="compare-result">
+                        <div class="stat-value" id="comparePriceA">---</div>
+                        <div class="stat-label">Last Price</div>
+                    </div>
+                    <button class="glass launch-btn" data-symbol-id="compareSymbolA"
+                        style="width: 100%; margin-top: 2rem; border-color: var(--accent-blue); color: var(--accent-blue);">Launch
+                        Bot A</button>
+                </div>
+
+                <div class="glass" style="padding: 2rem;">
+                    <h3 style="margin-bottom: 1.5rem; color: var(--accent-emerald);">Asset B</h3>
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label>Symbol</label>
+                        <input type="text" id="compareSymbolB" class="form-control" value="ETH/USDT">
+                    </div>
+                    <div id="compareResultB" class="compare-result">
+                        <div class="stat-value" id="comparePriceB">---</div>
+                        <div class="stat-label">Last Price</div>
+                    </div>
+                    <button class="glass launch-btn" data-symbol-id="compareSymbolB"
+                        style="width: 100%; margin-top: 2rem; border-color: var(--accent-emerald); color: var(--accent-emerald);">Launch
+                        Bot B</button>
+                </div>
+            </div>
+
+            <div class="glass" style="padding: 2rem; margin-top: 2rem;">
+                <button id="runComparisonBtn" class="kill-switch"
+                    style="width: 100%; background: var(--accent-blue);">EXECUTE SIDE-BY-SIDE ANALYSIS</button>
+            </div>
+        </section>
+
+        <!-- STRATEGIES SECTION -->
+        <section id="strategies" class="tab-content">
+            <header class="section-header" style="margin-bottom: 1.5rem;">
+                <h2 style="margin: 0;">Strategy Configuration</h2>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Configure the core
+                    parameters for your trading algorithms.</p>
+            </header>
+
+            <div class="dashboard-grid"
+                style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
+                <!-- EMA Cross Card -->
+                <div class="glass" style="padding: 1.5rem;">
                     <div
-                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-                        <h2 style="margin: 0;">Configure New Bot</h2>
-                        <i data-lucide="x" id="closeModal" style="cursor: pointer;"></i>
+                        style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <div>
+                            <h3 style="margin: 0; color: var(--accent-blue);">EMA Cross</h3>
+                            <span style="font-size: 0.7rem; color: var(--text-muted);">Trend
+                                Following</span>
+                        </div>
+                        <i data-lucide="activity" style="color: var(--accent-blue);"></i>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label style="font-size: 0.75rem;">Fast EMA Period</label>
+                        <input type="number" class="form-control" value="9" id="stratEmaFast">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label style="font-size: 0.75rem;">Slow EMA Period</label>
+                        <input type="number" class="form-control" value="21" id="stratEmaSlow">
+                    </div>
+                    <button class="glass"
+                        style="width: 100%; border-color: var(--accent-blue); color: var(--accent-blue);">Update
+                        Parameters</button>
+                </div>
+
+                <!-- Technical Pro Card -->
+                <div class="glass" style="padding: 1.5rem;">
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <div>
+                            <h3 style="margin: 0; color: var(--accent-emerald);">Technical Pro</h3>
+                            <span style="font-size: 0.7rem; color: var(--text-muted);">Multi-factor
+                                Analysis</span>
+                        </div>
+                        <i data-lucide="brain" style="color: var(--accent-emerald);"></i>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label style="font-size: 0.75rem;">RSI Period</label>
+                        <input type="number" class="form-control" value="14" id="stratTechRsi">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label style="font-size: 0.75rem;">MACD Fast</label>
+                        <input type="number" class="form-control" value="12" id="stratTechMacd">
+                    </div>
+                    <button class="glass"
+                        style="width: 100%; border-color: var(--accent-emerald); color: var(--accent-emerald);">Update
+                        Parameters</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- BACKTESTING SECTION -->
+        <section id="backtesting" class="tab-content">
+            <div class="backtest-container glass">
+                <div class="glass-header">
+                    <h2 style="margin: 0;">Laboratorio de Simulación Histórica</h2>
+                </div>
+                <div class="glass-content">
+                    <div class="form-group">
+                        <label>Par de Criptoactivos</label>
+                        <input type="text" id="btSymbol" class="form-control" value="BTC/USDT">
                     </div>
                     <div class="form-group">
-                        <label>Bot Unique ID</label>
-                        <input type="text" id="newBotId" class="form-control" placeholder="EMA-Bot-001">
-                    </div>
-                    <div class="form-group">
-                        <label>Strategy</label>
-                        <select id="newBotStrategy" class="form-control">
-                            <option value="ema_cross">EMA Cross (Custom Parameters)</option>
-                            <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
+                        <label>Timeframe</label>
+                        <select id="btTimeframe" class="form-control">
+                            <option value="15m">15 Minutes</option>
+                            <option value="1h" selected>1 Hour</option>
+                            <option value="4h">4 Hours</option>
+                            <option value="1d">1 Day</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Trading Pair (Symbol)</label>
-                        <input type="text" id="newBotSymbol" class="form-control" value="BTC/USDT">
+                        <label>Algorithm</label>
+                        <select id="btStrategy" class="form-control">
+                            <option value="ema_cross">EMA Cross (5/20)</option>
+                            <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
+                        </select>
                     </div>
-                    <div id="emaParams" style="display: block;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                            <div class="form-group">
-                                <label>Fast EMA Period</label>
-                                <input type="number" id="newBotFastEma" class="form-control" value="9">
-                            </div>
-                            <div class="form-group">
-                                <label>Slow EMA Period</label>
-                                <input type="number" id="newBotSlowEma" class="form-control" value="21">
-                            </div>
+                    <button id="runBacktestBtn">RUN HISTORICAL SIMULATION</button>
+
+                    <div id="backtestResults" style="margin-top: 2rem; display: none;">
+                        <h3>Simulation Metrics</h3>
+                        <div id="btMetrics" class="dashboard-grid"
+                            style="grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;"></div>
+
+                        <h3>Equity Curve</h3>
+                        <div style="width: 100%; height: 300px; margin-bottom: 2rem;">
+                            <canvas id="backtestChart"></canvas>
+                        </div>
+
+                        <h3>Simulation Trades</h3>
+                        <div id="btTrades"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SETTINGS SECTION -->
+        <section id="settings" class="tab-content">
+            <div class="glass">
+                <div class="glass-header">
+                    <h2 style="margin: 0;">Platform Settings</h2>
+                </div>
+                <div class="glass-content">
+                    <p style="color: var(--text-secondary); margin-bottom: 2rem;">Manage your connection to
+                        exchanges
+                        and global risk parameters.</p>
+
+                    <div style="max-width: 600px;">
+                        <h3 style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
+                            <i data-lucide="key" style="width: 16px;"></i> API Credentials
+                        </h3>
+                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                            <label>Exchange Selection</label>
+                            <select class="form-control">
+                                <option>Binance (Spot)</option>
+                                <option>Kraken</option>
+                                <option>Coinbase Pro</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 1rem;">
+                            <label>API Key</label>
+                            <input type="password" class="form-control" value="************************"
+                                placeholder="Enter API Key">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 2rem;">
+                            <label>Secret Key</label>
+                            <input type="password" class="form-control" value="************************"
+                                placeholder="Enter Secret Key">
+                        </div>
+
+                        <h3 style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
+                            <i data-lucide="shield-alert" style="width: 16px;"></i> Global Risk Limits
+                        </h3>
+                        <div class="form-group" style="margin-bottom: 1rem;">
+                            <label>Max Global Drawdown (%)</label>
+                            <input type="number" class="form-control" value="10">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 2rem;">
+                            <label>Emergency Contact (Webhook)</label>
+                            <input type="text" class="form-control" placeholder="https://discord.com/api/webhooks/...">
+                        </div>
+
+                        <button class="glass"
+                            style="padding: 12px 24px; background: var(--accent-blue); color: white; border: none; font-weight: 600; cursor: pointer;">
+                            SAVE CONFIGURATION
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Create Bot Modal -->
+        <div id="createBotModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content glass">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2 style="margin: 0;">Configure New Bot</h2>
+                    <i data-lucide="x" id="closeModal" data-action="close-modal" class="close-modal-btn"
+                        onclick="window.closeCreateBotModal()" style="cursor: pointer;"></i>
+                </div>
+                <div class="form-group">
+                    <label>Bot Unique ID</label>
+                    <input type="text" id="newBotId" class="form-control" placeholder="EMA-Bot-001">
+                </div>
+                <div class="form-group">
+                    <label>Strategy</label>
+                    <select id="newBotStrategy" class="form-control">
+                        <option value="ema_cross">EMA Cross (Custom Parameters)</option>
+                        <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
+                        <option value="grid_trading">Grid Trading (Rango de Precios)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Executor (Modo de Ejecución)</label>
+                    <select id="newBotExecutor" class="form-control">
+                        <option value="paper">📄 Paper Trading (Simulado)</option>
+                        <option value="hyperliquid">⚡ Hyperliquid — MAINNET (Fondos Reales)</option>
+                    </select>
+                    <div id="executorWarning"
+                        style="display:none; margin-top: 0.5rem; padding: 8px 12px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.4); border-radius: 8px; font-size: 0.78rem; color: #fca5a5;">
+                        ⚠️ <strong>FONDOS REALES</strong> — Este bot operará con tus USDC en Mainnet de Hyperliquid. El
+                        símbolo debe estar en formato <code>BTC/USDC:USDC</code>.
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Trading Pair (Symbol)</label>
+                    <input type="text" id="newBotSymbol" class="form-control" value="BTC/USDT">
+                    <div id="symbolHint" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Formato:
+                        <code>BTC/USDT</code> para paper, <code>BTC/USDC:USDC</code> para Hyperliquid Perps.
+                    </div>
+                </div>
+                <div id="emaParams" style="display: block;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group">
+                            <label>Fast EMA Period</label>
+                            <input type="number" id="newBotFastEma" class="form-control" value="9">
+                        </div>
+                        <div class="form-group">
+                            <label>Slow EMA Period</label>
+                            <input type="number" id="newBotSlowEma" class="form-control" value="21">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Grid Specific Parameters -->
+                <div id="gridParams" style="display: none;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group">
+                            <label>Upper Limit ($)</label>
+                            <input type="number" id="newBotUpperLimit" class="form-control" value="70000">
+                        </div>
+                        <div class="form-group">
+                            <label>Lower Limit ($)</label>
+                            <input type="number" id="newBotLowerLimit" class="form-control" value="60000">
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>Initial Allocation (USD)</label>
-                        <input type="number" id="newBotAllocation" class="form-control" value="1000">
-                    </div>
-                    <button id="confirmCreateBot" style="width: 100%; margin-top: 1rem;">FINALIZE AND START BOT</button>
-                </div>
-            </div>
-
-            <div id="previewPopup" class="preview-popup">
-                <h4 id="previewTitle" style="margin: 0 0 8px 0; font-size: 0.9rem;">Market Preview</h4>
-                <canvas id="previewCanvas" width="220" height="100"></canvas>
-                <div id="previewStats" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-secondary);"></div>
-            </div>
-
-            <!-- Field Selection Modal -->
-            <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
-                <div class="modal-content glass" style="max-width: 400px;">
-                    <div
-                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-                        <h2 style="margin: 0;">Select Visible Fields</h2>
-                        <button id="closeFieldModal" class="glass"
-                            style="padding: 5px 10px; cursor: pointer;">&times;</button>
-                    </div>
-
-                    <div id="fieldOptions"
-                        style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
-                        <!-- Fields will be dynamically added here -->
-                    </div>
-
-                    <div style="display: flex; gap: 1rem;">
-                        <button id="saveFields" class="glass"
-                            style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
-                            Preferences</button>
+                        <label>Number of Grids (Rejillas)</label>
+                        <input type="number" id="newBotNumGrids" class="form-control" value="10">
                     </div>
                 </div>
+                <div class="form-group">
+                    <label>Initial Allocation (USD) <span
+                            style="color: var(--text-muted); font-weight: 400; font-size:0.75rem;">(solo
+                            Paper)</span></label>
+                    <input type="number" id="newBotAllocation" class="form-control" value="1000">
+                </div>
+                <button id="confirmCreateBot" style="width: 100%; margin-top: 1rem;">FINALIZAR Y LANZAR BOT</button>
             </div>
+        </div>
+
+        <div id="previewPopup" class="preview-popup">
+            <h4 id="previewTitle" style="margin: 0 0 8px 0; font-size: 0.9rem;">Market Preview</h4>
+            <canvas id="previewCanvas" width="220" height="100"></canvas>
+            <div id="previewStats" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-secondary);"></div>
+        </div>
+
+        <!-- Field Selection Modal -->
+        <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content glass" style="max-width: 400px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+                    <h2 style="margin: 0;">Select Visible Fields</h2>
+                    <button id="closeFieldModal" class="glass"
+                        style="padding: 5px 10px; cursor: pointer;">&times;</button>
+                </div>
+
+                <div id="fieldOptions" style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
+                    <!-- Fields will be dynamically added here -->
+                </div>
+
+                <div style="display: flex; gap: 1rem;">
+                    <button id="saveFields" class="glass"
+                        style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
+                        Preferences</button>
+                </div>
+            </div>
+        </div>
         </div>
     </main>
 
@@ -534,7 +564,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=1.2"></script>
     <script>
         lucide.createIcons();
     </script>

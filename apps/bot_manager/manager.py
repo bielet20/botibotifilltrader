@@ -3,6 +3,8 @@ from typing import Dict, Any
 from apps.engine.ema_cross import EMACrossStrategy
 from apps.engine.technical_pro import TechnicalProStrategy
 from apps.engine.algo_expert import AlgoExpertStrategy
+from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
+from apps.engine.grid_trading import GridTradingStrategy
 from apps.engine.market_data import MarketDataEngine
 from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
@@ -23,17 +25,33 @@ class BotInstance:
             self.strategy = TechnicalProStrategy()
         elif "algo_expert" in strategy_name.lower():
             self.strategy = AlgoExpertStrategy()
+        elif "dynamic_reinvest" in strategy_name.lower():
+            tp = config.get("take_profit_pct", 0.02)
+            self.strategy = DynamicReinvestStrategy(take_profit_pct=tp)
+        elif "grid_trading" in strategy_name.lower():
+            upper = float(config.get("upper_limit", 70000))
+            lower = float(config.get("lower_limit", 60000))
+            grids = int(config.get("num_grids", 10))
+            self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
         else:
             fast = config.get("fast_ema", 9)
             slow = config.get("slow_ema", 21)
             self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow)
-            
-        self.mde = MarketDataEngine()
-        
-        # Paper Trading Components
-        initial_balance = config.get("initial_balance", 10000.0)
-        self.executor = PaperTradingExecutor(fee_rate=0.001)
-        self.portfolio = PaperTradingPortfolio(bot_id, initial_balance=initial_balance)
+
+        # Executor Factory — 'hyperliquid' for live trading, else paper
+        executor_type = config.get("executor", "paper").lower()
+        if executor_type == "hyperliquid":
+            from apps.engine.hyperliquid_executor import HyperliquidExecutor
+            self.executor = HyperliquidExecutor()
+            self.mde = MarketDataEngine(exchange_id='hyperliquid')
+            self.portfolio = None  # Live trading doesn't use a paper portfolio
+            print(f"[BotManager] Bot {bot_id} using LIVE Hyperliquid executor ⚡")
+        else:
+            self.executor = PaperTradingExecutor(fee_rate=0.001)
+            self.mde = MarketDataEngine()
+            initial_balance = config.get("initial_balance", 10000.0)
+            self.portfolio = PaperTradingPortfolio(bot_id, initial_balance=initial_balance)
+
         self.risk_engine = RiskEngine()
 
     async def run(self):
@@ -64,41 +82,60 @@ class BotInstance:
                 signal = await self.strategy.analyze({
                     'last_price': last_price, 
                     'symbol': symbol,
-                    'history': history
+                    'history': history,
+                    'portfolio': self.portfolio.get_summary() if self.portfolio else {}
                 })
                 
                 # 3. Validate with Risk Engine
                 risk_result = await self.risk_engine.validate(signal)
                 
                 if risk_result.approved and signal.side != TradeSide.HOLD:
-                    # 4. Execute with Paper Trading Executor
+                    # 4. Execute (paper or live)
                     execution = await self.executor.execute(signal)
-                    
-                    # 5. Update Portfolio
-                    portfolio_update = await self.portfolio.process_execution(
-                        execution, 
-                        signal.side, 
-                        signal.symbol
-                    )
-                    
-                    if portfolio_update.get("success"):
-                        # 6. Save to DB with P&L
-                        with SessionLocal() as db:
-                            trade_entry = TradeDB(
-                                bot_id=self.bot_id,
-                                symbol=signal.symbol,
-                                side=signal.side,
-                                price=execution.avg_price,
-                                amount=execution.filled_amount,
-                                fee=portfolio_update.get("fee", 0.0),
-                                pnl=portfolio_update.get("pnl", 0.0),
-                                meta=signal.meta
+
+                    if execution.status != "failed":
+                        if self.portfolio is not None:
+                            # 5a. Paper Trading — update portfolio
+                            portfolio_update = await self.portfolio.process_execution(
+                                execution,
+                                signal.side,
+                                signal.symbol
                             )
-                            db.add(trade_entry)
-                            db.commit()
-                        print(f"[{self.bot_id}] Trade executed: {signal.side} {signal.symbol} | P&L: ${portfolio_update.get('pnl', 0):.2f}")
+                            if portfolio_update.get("success"):
+                                with SessionLocal() as db:
+                                    trade_entry = TradeDB(
+                                        bot_id=self.bot_id,
+                                        symbol=signal.symbol,
+                                        side=signal.side,
+                                        price=execution.avg_price,
+                                        amount=execution.filled_amount,
+                                        fee=portfolio_update.get("fee", 0.0),
+                                        pnl=portfolio_update.get("pnl", 0.0),
+                                        meta=signal.meta
+                                    )
+                                    db.add(trade_entry)
+                                    db.commit()
+                                print(f"[{self.bot_id}] Trade executed: {signal.side} {signal.symbol} | P&L: ${portfolio_update.get('pnl', 0):.2f}")
+                            else:
+                                print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
+                        else:
+                            # 5b. Live Hyperliquid — save directly to DB
+                            with SessionLocal() as db:
+                                trade_entry = TradeDB(
+                                    bot_id=self.bot_id,
+                                    symbol=signal.symbol,
+                                    side=signal.side,
+                                    price=execution.avg_price,
+                                    amount=execution.filled_amount,
+                                    fee=0.0,
+                                    pnl=0.0,
+                                    meta={"order_id": execution.order_id, "status": execution.status}
+                                )
+                                db.add(trade_entry)
+                                db.commit()
+                            print(f"[{self.bot_id}] ⚡ LIVE trade: {signal.side} {signal.symbol} @ ${execution.avg_price:,.2f} | Order #{execution.order_id}")
                     else:
-                        print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
+                        print(f"[{self.bot_id}] Execution failed (live) — skipping this cycle.")
                 elif not risk_result.approved:
                     print(f"[{self.bot_id}] Trade rejected by risk engine: {risk_result.reason}")
                 else:

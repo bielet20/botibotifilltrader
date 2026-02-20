@@ -3,12 +3,15 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from apps.engine.backtester import BacktestEngine
 from apps.engine.ema_cross import EMACrossStrategy
 from apps.engine.technical_pro import TechnicalProStrategy
+from apps.engine.algo_expert import AlgoExpertStrategy
+from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
 from apps.engine.risk import RiskEngine
 from apps.bot_manager.manager import BotManager
 from apps.ai_engine.engine import AIEngine
@@ -160,6 +163,11 @@ async def run_backtest(params: dict):
     strategy_name = params.get("strategy", "ema_cross")
     if "technical_pro" in strategy_name.lower():
         strategy = TechnicalProStrategy()
+    elif "algo_expert" in strategy_name.lower():
+        strategy = AlgoExpertStrategy()
+    elif "dynamic_reinvest" in strategy_name.lower():
+        tp = params.get("take_profit_pct", 0.02)
+        strategy = DynamicReinvestStrategy(take_profit_pct=tp)
     else:
         strategy = EMACrossStrategy()
         

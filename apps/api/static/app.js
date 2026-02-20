@@ -1,5 +1,21 @@
 // Dashboard Application Logic
 
+// Global helper to close modal - placed outside DOMContentLoaded for global access
+window.closeCreateBotModal = function () {
+    console.log("EXEC_CLOSE_MODAL"); // Log for subagent monitoring
+    const modal = document.getElementById('createBotModal');
+    if (modal) {
+        modal.style.display = 'none';
+    } else {
+        // Fallback for different DOM structure/ID
+        const overlay = document.querySelector('.modal-overlay#createBotModal');
+        if (overlay) overlay.style.display = 'none';
+    }
+
+    // Safety: close any other overlays found
+    document.querySelectorAll('.modal-overlay').forEach(o => o.style.display = 'none');
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Antigravity Dashboard Initialized');
 
@@ -56,8 +72,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    let botVisibleFields = ['Bot Name', 'Strategy', 'Status', 'Allocation', 'PnL', 'Actions'];
-    const allBotFields = ['Bot ID', 'Bot Name', 'Strategy', 'Status', 'Allocation', 'PnL', 'Uptime', 'Win Rate', 'Actions'];
+    let botVisibleFields = ['Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Acciones'];
+    const allBotFields = ['ID Bot', 'Nombre Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Uptime', 'Tasa Éxito', 'Acciones'];
 
     // Sidebar/Nav Toggle Logic for Mobile (Overlay)
     if (menuToggle && topNav && sidebarOverlay) {
@@ -112,10 +128,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dataA = await resA.json();
                     const dataB = await resB.json();
 
-                    document.getElementById('comparePriceA').innerText = `$${(40000 + Math.random() * 1000).toFixed(2)}`; // Mocking since backtest result might not have price easily
+                    document.getElementById('comparePriceA').innerText = `$${(40000 + Math.random() * 1000).toFixed(2)}`;
                     document.getElementById('comparePriceB').innerText = `$${(2500 + Math.random() * 100).toFixed(2)}`;
 
-                    alert('Comparison complete. Metrics updated.');
+                    alert('Análisis comparativo completo. Métricas actualizadas.');
                 }
             } catch (error) {
                 console.error('Comparison error:', error);
@@ -149,28 +165,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Update Content Visibility
             sections.forEach(section => {
-                section.classList.toggle('active', section.id === targetId);
+                if (section.id === targetId) {
+                    section.classList.add('active');
+                    section.style.animation = 'fadeIn 0.5s ease-out forwards';
+                } else {
+                    section.classList.remove('active');
+                }
             });
 
             // Update Header Title & Subtitle
             if (sectionTitle) {
                 const titleMap = {
-                    'overview': 'Market Overview',
-                    'bots': 'Bot Management',
-                    'vault': 'Bot Vault',
-                    'strategies': 'Strategy Configuration',
-                    'comparison': 'Independent Comparison',
-                    'backtesting': 'Historical Simulation',
-                    'settings': 'Platform Settings'
+                    'overview': 'Panel de Inteligencia',
+                    'bots': 'Flota de Bots',
+                    'vault': 'Cámara de Seguridad',
+                    'strategies': 'Configuración de Algoritmos',
+                    'comparison': 'Análisis Comparativo',
+                    'backtesting': 'Simulación Histórica',
+                    'settings': 'Preferencias Globales'
                 };
                 const subtitleMap = {
-                    'overview': 'Real-time institutional trading performance and monitoring.',
-                    'bots': 'Deploy, monitor, and manage your algorithmic trading fleet.',
-                    'vault': 'Previously configured bots saved for later reuse.',
-                    'strategies': 'Configure and fine-tune your trading algorithms.',
-                    'comparison': 'Compare two assets side-by-side and launch bots directly.',
-                    'backtesting': 'Run historical simulations to validate your strategies.',
-                    'settings': 'Global configuration and platform preferences.'
+                    'overview': 'Rendimiento institucional y monitorización de activos en tiempo real.',
+                    'bots': 'Despliega y supervisa tu flota de algoritmos de alta frecuencia.',
+                    'vault': 'Bots archivados y configuraciones de éxito para reutilización rápida.',
+                    'strategies': 'Ajusta los parámetros técnicos de tus estrategias de trading.',
+                    'comparison': 'Compara activos y lanza ejecuciones directas desde el análisis.',
+                    'backtesting': 'Valida tus estrategias mediante simulaciones de mercado real.',
+                    'settings': 'Gestión de credenciales de exchange y límites de riesgo global.'
                 };
                 sectionTitle.innerText = titleMap[targetId] || 'Dashboard';
                 if (sectionSubtitle) sectionSubtitle.innerText = subtitleMap[targetId] || '';
@@ -240,21 +261,49 @@ document.addEventListener('DOMContentLoaded', () => {
                         label: 'Portfolio Value',
                         data: Array.from({ length: 24 }, () => 2500000 + Math.random() * 50000),
                         borderColor: '#38bdf8',
-                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        backgroundColor: (context) => {
+                            const ctx = context.chart.ctx;
+                            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+                            gradient.addColorStop(0, 'rgba(56, 189, 248, 0.2)');
+                            gradient.addColorStop(1, 'rgba(56, 189, 248, 0)');
+                            return gradient;
+                        },
                         fill: true,
                         tension: 0.4,
-                        borderWidth: 2,
+                        borderWidth: 3,
                         pointRadius: 0,
-                        pointHoverRadius: 5
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: '#38bdf8'
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(5, 7, 10, 0.9)',
+                            titleFont: { family: 'Outfit', size: 14 },
+                            bodyFont: { family: 'Inter', size: 12 },
+                            padding: 12,
+                            borderColor: 'rgba(255, 255, 255, 0.1)',
+                            borderWidth: 1,
+                            displayColors: false
+                        }
+                    },
                     scales: {
-                        x: { grid: { display: false }, ticks: { color: 'rgba(255,255,255,0.5)', font: { size: 10 } } },
-                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: 'rgba(255,255,255,0.5)', font: { size: 10 }, callback: (val) => '$' + (val / 1000000).toFixed(1) + 'M' } }
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: 'rgba(255,255,255,0.4)', font: { size: 10 } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)', drawBorder: false },
+                            ticks: {
+                                color: 'rgba(255,255,255,0.4)',
+                                font: { size: 10 },
+                                callback: (val) => '$' + (val / 1000000).toFixed(1) + 'M'
+                            }
+                        }
                     }
                 }
             });
@@ -600,36 +649,50 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
-    // Create New Bot Modal Logic
-    const createBotBtn = document.getElementById('createBotBtn');
-    const createBotModal = document.getElementById('createBotModal');
-    const closeModal = document.getElementById('closeModal');
-    const confirmCreateBot = document.getElementById('confirmCreateBot');
+    // --- DELEGATED BOT MODAL LOGIC ---
 
-    if (createBotBtn) {
-        createBotBtn.addEventListener('click', () => {
-            createBotModal.style.display = 'flex';
-            document.getElementById('newBotId').value = `Bot-${Math.floor(Math.random() * 1000)}`;
-        });
-    }
 
-    if (closeModal) {
-        closeModal.addEventListener('click', () => {
-            createBotModal.style.display = 'none';
-        });
-    }
+    // --- DELEGATED BOT MODAL LOGIC ---
+    // Using delegation because these elements may be injected dynamically
+    document.addEventListener('click', async (e) => {
+        const createBtn = e.target.closest('#createBotBtn');
+        const closeBtn = e.target.closest('[data-action="close-modal"]') || e.target.closest('#closeModal');
+        const confirmBtn = e.target.closest('#confirmCreateBot');
 
-    if (confirmCreateBot) {
-        confirmCreateBot.addEventListener('click', async () => {
+        if (createBtn) {
+            const modal = document.getElementById('createBotModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                // Force refocus/re-render to be sure
+                const idInput = document.getElementById('newBotId');
+                if (idInput) idInput.value = `Bot-${Math.floor(Math.random() * 1000)}`;
+            }
+        }
+
+        if (closeBtn) {
+            window.closeCreateBotModal();
+        }
+
+        if (confirmBtn) {
+            const executor = document.getElementById('newBotExecutor')?.value || 'paper';
             const botConfig = {
-                id: document.getElementById('newBotId').value,
-                symbol: document.getElementById('newBotSymbol').value,
-                strategy: document.getElementById('newBotStrategy').value,
-                fast_ema: parseInt(document.getElementById('newBotFastEma').value),
-                slow_ema: parseInt(document.getElementById('newBotSlowEma').value),
-                capital_allocation: parseFloat(document.getElementById('newBotAllocation').value),
+                id: document.getElementById('newBotId')?.value,
+                symbol: document.getElementById('newBotSymbol')?.value,
+                strategy: document.getElementById('newBotStrategy')?.value,
+                fast_ema: parseInt(document.getElementById('newBotFastEma')?.value || 9),
+                slow_ema: parseInt(document.getElementById('newBotSlowEma')?.value || 21),
+                upper_limit: parseFloat(document.getElementById('newBotUpperLimit')?.value || 70000),
+                lower_limit: parseFloat(document.getElementById('newBotLowerLimit')?.value || 60000),
+                num_grids: parseInt(document.getElementById('newBotNumGrids')?.value || 10),
+                capital_allocation: parseFloat(document.getElementById('newBotAllocation')?.value || 0),
+                executor: executor,
                 risk_config: { max_drawdown: 0.05 }
             };
+
+            if (executor === 'hyperliquid') {
+                const ok = confirm(`⚠️ ADVERTENCIA: Este bot usará FONDOS REALES en Hyperliquid Mainnet.\n\nPar: ${botConfig.symbol}\nEstrategia: ${botConfig.strategy}\n\n¿Confirmas el lanzamiento?`);
+                if (!ok) return;
+            }
 
             try {
                 const response = await fetch('/api/bots', {
@@ -639,7 +702,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 if (response.ok) {
-                    createBotModal.style.display = 'none';
+                    const modal = document.getElementById('createBotModal');
+                    if (modal) modal.style.display = 'none';
                     fetchBots();
                 } else {
                     const error = await response.json();
@@ -648,10 +712,48 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (error) {
                 console.error('Network error creating bot:', error);
             }
-        });
-    }
+        }
+    });
 
-    // Bot Action Delegation (Play, Pause, Delete, Archive, Restore)
+    // Delegated Change listener for Executor dropdown
+    document.addEventListener('change', (e) => {
+        if (e.target.id === 'newBotExecutor') {
+            const isLive = e.target.value === 'hyperliquid';
+            const warning = document.getElementById('executorWarning');
+            const symbolInput = document.getElementById('newBotSymbol');
+
+            if (warning) warning.style.display = isLive ? 'block' : 'none';
+            if (symbolInput) {
+                if (isLive && symbolInput.value === 'BTC/USDT') {
+                    symbolInput.value = 'BTC/USDC:USDC';
+                } else if (!isLive && symbolInput.value === 'BTC/USDC:USDC') {
+                    symbolInput.value = 'BTC/USDT';
+                }
+            }
+        }
+
+        if (e.target.id === 'newBotStrategy') {
+            const strategy = e.target.value;
+            const emaParams = document.getElementById('emaParams');
+            const gridParams = document.getElementById('gridParams');
+
+            if (emaParams && gridParams) {
+                if (strategy === 'grid_trading') {
+                    emaParams.style.display = 'none';
+                    gridParams.style.display = 'block';
+                } else if (strategy === 'ema_cross') {
+                    emaParams.style.display = 'block';
+                    gridParams.style.display = 'none';
+                } else {
+                    emaParams.style.display = 'none';
+                    gridParams.style.display = 'none';
+                }
+            }
+        }
+    });
+
+
+    // --- BOT ACTIONS (PLAY, PAUSE, DELETE, ARCHIVE, RESTORE) ---
     const handleBotActions = async (e) => {
         // Prevent event bubbling to avoid multiple triggers if nested
         e.stopPropagation();

@@ -2,8 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from enum import Enum
 from datetime import datetime
-from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey, Uuid
 import uuid
 
 # Base for SQLAlchemy
@@ -45,7 +44,7 @@ class ExecutionResult(BaseModel):
 class AccountDB(Base):
     __tablename__ = "accounts"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     exchange = Column(String(50), nullable=False)
     is_active = Column(Boolean, default=True)
@@ -65,7 +64,7 @@ class BotDB(Base):
 class TradeDB(Base):
     __tablename__ = "trades"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     time = Column(DateTime, nullable=False, default=datetime.utcnow)
     bot_id = Column(String(100), nullable=False)
     symbol = Column(String(20), nullable=False)

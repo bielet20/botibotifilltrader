@@ -1,19 +1,24 @@
 import asyncio
 import os
 import shutil
+import unittest.mock as mock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from apps.shared.database import Base, SessionLocal
-from apps.shared.models import TradeSignal, TradeSide, BotStatus, BotDB
-from apps.engine.market_data import MarketDataEngine
-from apps.engine.risk import RiskEngine
-from apps.bot_manager.manager import BotManager
-from apps.ai_engine.engine import AIEngine
 
 # Test Database Setup
 TEST_DB_URL = "sqlite:///:memory:"
 test_engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+# CRITICAL: We need to mock the engine in apps.shared.database BEFORE importing models
+with mock.patch("apps.shared.database.engine", test_engine), \
+     mock.patch("apps.shared.database.SessionLocal", TestingSessionLocal):
+    from apps.shared.database import Base
+    from apps.shared.models import TradeSignal, TradeSide, BotStatus, BotDB
+    from apps.engine.market_data import MarketDataEngine
+    from apps.engine.risk import RiskEngine
+    from apps.bot_manager.manager import BotManager
+    from apps.ai_engine.engine import AIEngine
 
 def setup_test_db():
     print("--- [Setup] Initializing Test SQLite DB ---")
