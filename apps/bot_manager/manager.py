@@ -1,5 +1,6 @@
 import asyncio
 from typing import Dict, Any
+from datetime import datetime
 from apps.engine.ema_cross import EMACrossStrategy
 from apps.engine.technical_pro import TechnicalProStrategy
 from apps.engine.algo_expert import AlgoExpertStrategy
@@ -53,6 +54,31 @@ class BotInstance:
             self.portfolio = PaperTradingPortfolio(bot_id, initial_balance=initial_balance)
 
         self.risk_engine = RiskEngine()
+
+    def reconfigure(self, new_config: Dict):
+        """Update bot configuration and re-initialize strategy."""
+        self.config.update(new_config)
+        
+        # Re-initialize Strategy with new parameters
+        strategy_name = self.config.get("strategy", "ema_cross")
+        if "technical_pro" in strategy_name.lower():
+            self.strategy = TechnicalProStrategy()
+        elif "algo_expert" in strategy_name.lower():
+            self.strategy = AlgoExpertStrategy()
+        elif "dynamic_reinvest" in strategy_name.lower():
+            tp = self.config.get("take_profit_pct", 0.02)
+            self.strategy = DynamicReinvestStrategy(take_profit_pct=tp)
+        elif "grid_trading" in strategy_name.lower():
+            upper = float(self.config.get("upper_limit", 70000))
+            lower = float(self.config.get("lower_limit", 60000))
+            grids = int(self.config.get("num_grids", 10))
+            self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
+        else:
+            fast = self.config.get("fast_ema", 9)
+            slow = self.config.get("slow_ema", 21)
+            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow)
+        
+        print(f"[BotInstance] Bot {self.bot_id} reconfigured with new parameters.")
 
     async def run(self):
         self.status = BotStatus.RUNNING
@@ -232,6 +258,37 @@ class BotManager:
         bot._task = asyncio.create_task(bot.run())
         return True
 
+    async def adopt_position(self, bot_id: str, symbol: str, strategy: str, config: Dict):
+        """
+        Asocia una posición abierta existente con un nuevo bot.
+        """
+        with SessionLocal() as db:
+            # 1. Crear el bot
+            bot_entry = BotDB(
+                id=bot_id,
+                strategy=strategy,
+                status="running",
+                config=config,
+                created_at=datetime.utcnow()
+            )
+            db.add(bot_entry)
+            
+            # 2. Buscar posición huérfana en PositionDB (bot_id='ORPHAN') o simplemente crear vínculo si no existe
+            existing_pos = db.query(PositionDB).filter(
+                PositionDB.symbol == symbol,
+                PositionDB.bot_id == "ORPHAN",
+                PositionDB.is_open == True
+            ).first()
+            
+            if existing_pos:
+                existing_pos.bot_id = bot_id
+                print(f"[BotManager] Position for {symbol} adopted by bot {bot_id}")
+            
+            db.commit()
+            
+            # 3. Iniciar el bot en memoria
+            return self.start_bot(bot_id, config)
+
     def stop_bot(self, bot_id: str):
         bot = self.active_bots.get(bot_id)
         if bot:
@@ -282,6 +339,29 @@ class BotManager:
                 db.commit()
                 return True
         return False
+
+    def update_bot_config(self, bot_id: str, new_config: Dict):
+        """Update bot configuration in DB and update active instance if running."""
+        with SessionLocal() as db:
+            bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
+            if not bot_entry:
+                return False
+            
+            # Merge configs - copy to ensure SQLAlchemy detects change
+            current_config = dict(bot_entry.config or {})
+            current_config.update(new_config)
+            
+            # Explicitly flag as modified by re-assigning
+            bot_entry.config = current_config
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(bot_entry, "config")
+            db.commit()
+            
+            # If bot is running, update it in memory
+            if bot_id in self.active_bots:
+                self.active_bots[bot_id].reconfigure(current_config)
+                
+            return True
 
     async def resume_bots(self):
         print("[BotManager] Resuming active bots from database...")

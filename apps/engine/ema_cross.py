@@ -10,7 +10,6 @@ class EMACrossStrategy(BaseStrategy):
     async def analyze(self, market_data: dict) -> TradeSignal:
         # Placeholder for real EMA calculation logic using market_data (OHLCV)
         # For now, it just simulates a signal for demonstration
-        await asyncio.sleep(0.1)
         
         symbol = market_data.get('symbol', 'BTC/USDT')
         price = market_data.get('last_price', 40000)

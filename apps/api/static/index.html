@@ -18,569 +18,723 @@
 </head>
 
 <body>
-    <div id="sidebarOverlay" class="sidebar-overlay"></div>
-
-    <!-- Top Navigation Header -->
-    <header class="glass">
-        <div class="header-container">
-            <div class="header-left">
+    <div class="app-shell">
+        <!-- Institutional Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
                 <div class="logo">
                     <i data-lucide="zap"></i>
                     <span>ANTIGRAVITY</span>
                 </div>
-                <button id="menuToggle" class="menu-toggle glass">
-                    <i data-lucide="menu"></i>
-                </button>
             </div>
 
-            <div class="header-right">
-                <button class="kill-switch" id="killSwitchBtn">
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-link active" data-tab="overview">
+                    <i data-lucide="layout-dashboard"></i>
+                    <span>Inteligencia</span>
+                </a>
+                <a href="#" class="nav-link" data-tab="bots">
+                    <i data-lucide="bot"></i>
+                    <span>Mis Bots</span>
+                </a>
+                <a href="#" class="nav-link" data-tab="vault">
+                    <i data-lucide="archive"></i>
+                    <span>Cápsula</span>
+                </a>
+                <a href="#" class="nav-link" data-tab="strategies">
+                    <i data-lucide="component"></i>
+                    <span>Estrategias</span>
+                </a>
+                <a href="#" class="nav-link" data-tab="comparison">
+                    <i data-lucide="arrow-left-right"></i>
+                    <span>Comparador</span>
+                </a>
+                <a href="#" class="nav-link" data-tab="backtesting">
+                    <i data-lucide="history"></i>
+                    <span>Backtesting</span>
+                </a>
+                <div style="margin-top: auto; padding-top: 1rem;">
+                    <a href="#" class="nav-link" data-tab="settings">
+                        <i data-lucide="settings"></i>
+                        <span>Ajustes</span>
+                    </a>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button class="kill-switch" id="killSwitchBtn" style="width: 100%; font-size: 0.75rem; padding: 10px;">
                     GLOBAL KILL SWITCH
                 </button>
-                <div class="profile-circle glass" title="Settings" data-tab="settings" style="cursor: pointer;">
-                    <i data-lucide="settings"></i>
-                </div>
             </div>
-        </div>
-    </header>
+        </aside>
 
-    <!-- Navigation Menu (Desktop: Horizontal, Mobile: Overlay) -->
-    <nav class="top-nav glass">
-        <div class="nav-links">
-            <a href="#" class="nav-link active" data-tab="overview">
-                <i data-lucide="layout-dashboard"></i>
-                <span>General</span>
-            </a>
-            <a href="#" class="nav-link" data-tab="bots">
-                <i data-lucide="bot"></i>
-                <span>Mis Bots</span>
-            </a>
-            <a href="#" class="nav-link" data-tab="vault">
-                <i data-lucide="archive"></i>
-                <span>Cápsula</span>
-            </a>
-            <a href="#" class="nav-link" data-tab="strategies">
-                <i data-lucide="component"></i>
-                <span>Estrategias</span>
-            </a>
-            <a href="#" class="nav-link" data-tab="comparison">
-                <i data-lucide="arrow-left-right"></i>
-                <span>Comparador</span>
-            </a>
-            <a href="#" class="nav-link" data-tab="backtesting">
-                <i data-lucide="history"></i>
-                <span>Backtesting</span>
-            </a>
-        </div>
-    </nav>
+        <!-- Main Workspace -->
+        <main>
+            <div class="content-container">
+                <div class="section-info">
+                    <h1 id="sectionTitle">Inteligencia de Mercado</h1>
+                    <p id="sectionSubtitle">Monitorización institutional de activos y rendimiento algorítmico en tiempo
+                        real.</p>
+                </div>
 
-    <!-- Main Dashboard -->
-    <main>
-        <div class="section-info">
-            <h1 id="sectionTitle">Inteligencia de Mercado</h1>
-            <p id="sectionSubtitle">Monitorización institutional de activos y rendimiento algorítmico en tiempo real.
-            </p>
-        </div>
-        <div class="dashboard-container">
+                <div class="dashboard-container">
 
-            <!-- SECTIONS -->
-            <section id="overview" class="tab-content active">
-                <div class="dashboard-grid">
-                    <!-- Stats -->
-                    <!-- Live Stats Row -->
-                    <div class="stat-card glass">
-                        <span class="stat-label">PnL Total Realizado</span>
-                        <span class="stat-value" id="statTotalPnl" style="color: var(--accent-emerald);">$0.00</span>
-                        <span style="color: var(--text-muted); font-size: 0.78rem;" id="statWinLoss">— wins / —
-                            losses</span>
-                    </div>
-                    <div class="stat-card glass">
-                        <span class="stat-label">Fees Pagadas (Total)</span>
-                        <span class="stat-value" id="statTotalFees" style="color: #facc15;">$0.000</span>
-                        <span style="color: var(--text-muted); font-size: 0.78rem;" id="statTotalVolume">Volumen:
-                            $0</span>
-                    </div>
-                    <div class="stat-card glass">
-                        <span class="stat-label">Tasa de Éxito</span>
-                        <span class="stat-value" id="statWinRate">0%</span>
-                        <div
-                            style="width: 100%; height: 4px; background: var(--bg-glass); border-radius: 2px; margin-top: 4px;">
-                            <div id="statWinRateBar"
-                                style="width: 0%; height: 100%; background: var(--accent-emerald); border-radius: 2px; transition: width 0.5s;">
+                    <!-- SECTIONS -->
+                    <section id="overview" class="tab-content active">
+                        <div class="dashboard-grid">
+                            <!-- Stats Row -->
+                            <div class="stat-card glass">
+                                <div class="glass-header">
+                                    <h3>PnL Realizado</h3>
+                                    <i data-lucide="trending-up" class="pulse-icon"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <span class="stat-value" id="statTotalPnl"
+                                        style="color: var(--accent-emerald);">$0.00</span>
+                                    <span id="statWinLoss" style="color: var(--text-muted); font-size: 0.75rem;">— wins
+                                        / — losses</span>
+                                </div>
+                            </div>
+
+                            <div class="stat-card glass">
+                                <div class="glass-header">
+                                    <h3>Comisiones</h3>
+                                    <i data-lucide="ticket" style="color: #facc15;"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <span class="stat-value" id="statTotalFees" style="color: #facc15;">$0.000</span>
+                                    <span id="statTotalVolume"
+                                        style="color: var(--text-muted); font-size: 0.75rem;">Volumen: $0</span>
+                                </div>
+                            </div>
+
+                            <div class="stat-card glass">
+                                <div class="glass-header">
+                                    <h3>Tasa de Éxito</h3>
+                                    <i data-lucide="target" style="color: var(--accent-emerald);"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <span class="stat-value" id="statWinRate">0%</span>
+                                    <div
+                                        style="width: 100%; height: 4px; background: var(--bg-glass); border-radius: 2px; margin-top: 8px;">
+                                        <div id="statWinRateBar"
+                                            style="width: 0%; height: 100%; background: var(--accent-emerald); border-radius: 2px;">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="stat-card glass">
+                                <div class="glass-header">
+                                    <h3>Exposición</h3>
+                                    <i data-lucide="shield" style="color: var(--accent-blue);"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <span class="stat-value" id="statOpenPositions">0</span>
+                                    <span id="statOpenOrders" style="color: var(--text-muted); font-size: 0.75rem;">0
+                                        órdenes activas</span>
+                                </div>
+                            </div>
+
+                            <!-- Main Chart Row -->
+                            <div class="glass resizable-container wide-card" id="resizableOverview">
+                                <div class="glass-header">
+                                    <h2>Rendimiento General</h2>
+                                    <i data-lucide="line-chart"></i>
+                                </div>
+                                <div class="glass-content" style="height: 350px;">
+                                    <canvas id="performanceChart"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="glass wide-card">
+                                <div class="glass-header" style="border-left: 4px solid var(--accent-blue);">
+                                    <h2>Sugerencia Central de IA</h2>
+                                    <div class="pulse-icon"></div>
+                                </div>
+                                <div class="glass-content">
+                                    <p id="aiMarketSummary"
+                                        style="color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
+                                        Analizando mercados... La red neuronal está supervisando activamente la flota
+                                        para optimizar el rendimiento.
+                                    </p>
+                                    <div
+                                        style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
+                                        <span
+                                            style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Confianza
+                                            del Modelo</span>
+                                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
+                                            <div
+                                                style="flex: 1; height: 3px; background: rgba(59, 130, 246, 0.1); border-radius: 2px;">
+                                                <div
+                                                    style="width: 94%; height: 100%; background: var(--accent-blue); border-radius: 2px;">
+                                                </div>
+                                            </div>
+                                            <span
+                                                style="font-size: 0.75rem; font-weight: 700; color: var(--accent-blue);">94%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Tables Row -->
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <h2>📍 Posiciones Abiertas</h2>
+                                    <span id="openPositionsBadge"
+                                        style="background: rgba(16,185,129,0.1); color: #6ee7b7; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem;">0
+                                        abiertas</span>
+                                </div>
+                                <div class="glass-content" style="padding: 0;">
+                                    <table class="institutional-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Bot</th>
+                                                <th>Symbol</th>
+                                                <th>Lado</th>
+                                                <th>Entrada</th>
+                                                <th>Precio Actual</th>
+                                                <th>Cantidad</th>
+                                                <th>PnL No Realizado</th>
+                                                <th>Fee</th>
+                                                <th>Abierta</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="openPositionsTableBody">
+                                            <tr>
+                                                <td colspan="9"
+                                                    style="text-align: center; padding: 3rem; color: var(--text-muted);">
+                                                    Sin posiciones activas</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <h2>Transacciones Recientes</h2>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button onclick="window.location.href='/api/reports/pdf'" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.7rem; color: var(--accent-blue); border-color: var(--accent-blue);">EXCEL/PDF</button>
+                                    </div>
+                                </div>
+                                <div class="glass-content" id="recentTradesContent">
+                                    <!-- Feed injected by JS -->
+                                </div>
+                            </div>
+                        </div> <!-- closing .dashboard-grid -->
+                    </section>
+
+                    <!-- BOTS SECTION -->
+                    <section id="bots" class="tab-content">
+                        <div class="glass full-card">
+                            <div class="glass-header">
+                                <h2>Flota de Bots Algorítmicos</h2>
+                                <div style="display: flex; gap: 1rem;">
+                                    <button class="glass view-options-btn" data-target="bots">
+                                        <i data-lucide="eye"></i> Columnas
+                                    </button>
+                                    <button id="createBotBtn" class="glass"
+                                        style="padding: 8px 16px; border: 1px solid var(--accent-blue); color: var(--accent-blue); cursor: pointer;">+
+                                        Crear Nuevo Bot</button>
+                                </div>
+                            </div>
+                            <div class="glass-content" style="padding: 0;">
+                                <table class="institutional-table">
+                                    <thead>
+                                        <tr>
+                                            <th>ID Bot</th>
+                                            <th>Nombre</th>
+                                            <th>Estrategia</th>
+                                            <th>Estado</th>
+                                            <th>Asignación</th>
+                                            <th>PnL Realizado</th>
+                                            <th>Uptime</th>
+                                            <th>Éxito</th>
+                                            <th style="text-align: right;">Acciones</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="botTableBody">
+                                        <!-- Injected via app.js -->
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
-                    </div>
-                    <div class="stat-card glass">
-                        <span class="stat-label">Posiciones Abiertas</span>
-                        <span class="stat-value" id="statOpenPositions">0</span>
-                        <span style="color: var(--text-muted); font-size: 0.78rem;" id="statOpenOrders">Órdenes en log:
-                            0</span>
-                    </div>
+                    </section>
 
-                    <!-- Gráfico Principal -->
-                    <div class="main-chart-container glass">
-                        <h2>Rendimiento General</h2>
-                        <div style="width: 100%; height: 300px; position: relative;">
-                            <canvas id="performanceChart"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- Open Positions Table -->
-                    <div class="glass" style="margin-bottom: 1.5rem;">
-                        <div class="glass-header">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 style="margin: 0;">📍 Posiciones Abiertas</h2>
-                                <span id="openPositionsBadge"
-                                    style="background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.4); color: #6ee7b7; padding: 2px 10px; border-radius: 12px; font-size: 0.78rem;">0
-                                    abiertas</span>
+                    <!-- VAULT SECTION -->
+                    <section id="vault" class="tab-content">
+                        <div class="glass full-card">
+                            <div class="glass-header">
+                                <div>
+                                    <h2>Cápsula de Seguridad</h2>
+                                    <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">Bots
+                                        archivados y configuraciones guardadas para su reutilización inmediata.</p>
+                                </div>
+                            </div>
+                            <div class="glass-content" style="padding: 0;">
+                                <table class="institutional-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Bot ID</th>
+                                            <th>Strategy</th>
+                                            <th>Allocation</th>
+                                            <th>Last Status</th>
+                                            <th style="text-align: right;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="vaultTableBody">
+                                        <!-- Injected via app.js -->
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
-                        <div class="glass-content">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
-                                <thead>
-                                    <tr
-                                        style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                        <th style="padding: 0.75rem;">Bot</th>
-                                        <th style="padding: 0.75rem;">Symbol</th>
-                                        <th style="padding: 0.75rem;">Lado</th>
-                                        <th style="padding: 0.75rem;">Entrada</th>
-                                        <th style="padding: 0.75rem;">Precio Actual</th>
-                                        <th style="padding: 0.75rem;">Cantidad</th>
-                                        <th style="padding: 0.75rem;">PnL No Realizado</th>
-                                        <th style="padding: 0.75rem;">Fee Pagada</th>
-                                        <th style="padding: 0.75rem;">Abierta</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="openPositionsTableBody">
-                                    <tr>
-                                        <td colspan="9"
-                                            style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay
-                                            posiciones abiertas</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+                    </section>
 
-                    <!-- Inteligencia Artificial -->
-                    <div class="glass ai-card"
-                        style="padding: 1.5rem; margin-bottom: 1.5rem; border-left: 4px solid var(--accent-blue);">
-                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 0.5rem;">
-                            <div class="pulse-icon"></div>
-                            <h2 style="margin: 0; color: var(--accent-blue); font-size: 1rem;">NÚCLEO DE IA</h2>
+                    <!-- STRATEGIES SECTION -->
+                    <section id="strategies" class="tab-content">
+                        <div class="section-info">
+                            <h2>Configuración de Algoritmos</h2>
+                            <p>Ajuste maestro de parámetros para la flota de ejecución.</p>
                         </div>
-                        <p id="aiMarketSummary"
-                            style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
-                            Analizando mercados... La red neuronal está supervisando activamente 12 bots para optimizar
-                            el rendimiento.
-                        </p>
-                    </div>
+                        <div class="dashboard-grid">
+                            <div class="glass wide-card">
+                                <div class="glass-header">
+                                    <h3>EMA Cross</h3>
+                                    <i data-lucide="activity" style="color: var(--accent-blue);"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <div
+                                        style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+                                        <div class="form-group">
+                                            <label>Fast EMA Period</label>
+                                            <input type="number" class="form-control" value="9" id="stratEmaFast">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Slow EMA Period</label>
+                                            <input type="number" class="form-control" value="21" id="stratEmaSlow">
+                                        </div>
+                                    </div>
+                                    <button class="glass"
+                                        style="width: 100%; border-color: var(--accent-blue); color: var(--accent-blue); padding: 12px;">ACTUALIZAR
+                                        PARAMETROS MAESTROS</button>
+                                </div>
+                            </div>
 
-                    <div class="glass" style="margin-bottom: 1.5rem;">
-                        <div class="glass-header">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 style="margin: 0;">Últimas Operaciones</h2>
-                                <div style="display: flex; gap: 8px;">
-                                    <button onclick="window.location.href='/api/reports/pdf'" class="glass"
-                                        style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--accent-blue); color: var(--accent-blue);">PDF</button>
-                                    <button onclick="window.location.href='/api/reports/json'" class="glass"
-                                        style="padding: 4px 8px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--text-secondary);">JSON</button>
+                            <div class="glass wide-card">
+                                <div class="glass-header">
+                                    <h3>Technical Pro</h3>
+                                    <i data-lucide="brain" style="color: var(--accent-emerald);"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <div
+                                        style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+                                        <div class="form-group">
+                                            <label>RSI Period</label>
+                                            <input type="number" class="form-control" value="14" id="stratTechRsi">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>MACD Fast</label>
+                                            <input type="number" class="form-control" value="12" id="stratTechMacd">
+                                        </div>
+                                    </div>
+                                    <button class="glass"
+                                        style="width: 100%; border-color: var(--accent-emerald); color: var(--accent-emerald); padding: 12px;">OPTIMIZAR
+                                        CONFIGURACIÓN</button>
                                 </div>
                             </div>
                         </div>
-                        <div class="glass-content" id="recentTradesContent">
-                            <div style="display: flex; flex-direction: column; gap: 1rem;">
-                                <!-- Trades feed script will target this div or we can inject directly into #recentTradesContent -->
+                    </section>
+
+                    <!-- COMPARISON SECTION -->
+                    <section id="comparison" class="tab-content">
+                        <div class="section-info">
+                            <h2>Análisis Comparativo</h2>
+                            <p>Evaluación side-by-side de activos para despliegue táctico.</p>
+                        </div>
+                        <div class="dashboard-grid">
+                            <div class="glass wide-card">
+                                <div class="glass-header">
+                                    <h3>Activo A</h3>
+                                    <span class="badge"
+                                        style="background: rgba(59,130,246,0.1); color: var(--accent-blue);">Primary</span>
+                                </div>
+                                <div class="glass-content">
+                                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                                        <label>Symbol</label>
+                                        <input type="text" id="compareSymbolA" class="form-control" value="BTC/USDT">
+                                    </div>
+                                    <div id="compareResultA" class="compare-result"
+                                        style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 8px; margin-bottom: 1.5rem;">
+                                        <div style="font-size: 0.75rem; color: var(--text-muted);">Último Precio</div>
+                                        <div class="stat-value" id="comparePriceA" style="font-size: 1.5rem;">---</div>
+                                    </div>
+                                    <button class="glass launch-btn" data-symbol-id="compareSymbolA"
+                                        style="width: 100%; border-color: var(--accent-blue); color: var(--accent-blue); padding: 12px;">DESPLEGAR
+                                        BOT A</button>
+                                </div>
+                            </div>
+
+                            <div class="glass wide-card">
+                                <div class="glass-header">
+                                    <h3>Activo B</h3>
+                                    <span class="badge"
+                                        style="background: rgba(16,185,129,0.1); color: var(--accent-emerald);">Secondary</span>
+                                </div>
+                                <div class="glass-content">
+                                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                                        <label>Symbol</label>
+                                        <input type="text" id="compareSymbolB" class="form-control" value="ETH/USDT">
+                                    </div>
+                                    <div id="compareResultB" class="compare-result"
+                                        style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 8px; margin-bottom: 1.5rem;">
+                                        <div style="font-size: 0.75rem; color: var(--text-muted);">Último Precio</div>
+                                        <div class="stat-value" id="comparePriceB" style="font-size: 1.5rem;">---</div>
+                                    </div>
+                                    <button class="glass launch-btn" data-symbol-id="compareSymbolB"
+                                        style="width: 100%; border-color: var(--accent-emerald); color: var(--accent-emerald); padding: 12px;">DESPLEGAR
+                                        BOT B</button>
+                                </div>
+                            </div>
+
+                            <div class="full-card">
+                                <button id="runComparisonBtn" class="glass"
+                                    style="width: 100%; height: 60px; background: var(--accent-blue); color: white; border: none; font-weight: 700; font-size: 1rem; letter-spacing: 0.1em; cursor: pointer;">EJECUTAR
+                                    ANÁLISIS COMPARATIVO PROFUNDO</button>
                             </div>
                         </div>
-                    </div>
-                </div>
-        </div>
-        </section>
+                    </section>
 
-        <!-- BOTS SECTION -->
-        <section id="bots" class="tab-content">
-            <div class="bot-list glass">
-                <div class="glass-header">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h2 style="margin: 0;">Flota de Bots Algorítmicos</h2>
-                        <div style="display: flex; gap: 1rem;">
-                            <button class="glass view-options-btn" data-target="bots">
-                                <i data-lucide="eye"></i> Columnas
+                    <!-- BACKTESTING SECTION -->
+                    <section id="backtesting" class="tab-content">
+                        <div class="glass full-card">
+                            <div class="glass-header">
+                                <h2>Laboratorio de Simulación Histórica</h2>
+                                <i data-lucide="beaker"></i>
+                            </div>
+                            <div class="glass-content">
+                                <div
+                                    style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 2rem;">
+                                    <div class="form-group">
+                                        <label>Par de Criptoactivos</label>
+                                        <input type="text" id="btSymbol" class="form-control" value="BTC/USDT">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Timeframe</label>
+                                        <select id="btTimeframe" class="form-control">
+                                            <option value="15m">15 Minutes</option>
+                                            <option value="1h" selected>1 Hour</option>
+                                            <option value="4h">4 Hours</option>
+                                            <option value="1d">1 Day</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Algorithm</label>
+                                        <select id="btStrategy" class="form-control">
+                                            <option value="ema_cross">EMA Cross (5/20)</option>
+                                            <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button id="runBacktestBtn" class="glass"
+                                    style="width: 100%; padding: 15px; background: var(--accent-blue); color: white; border: none; font-weight: 700;">INICIAR
+                                    SIMULACIÓN ESTATÍSTICA</button>
+
+                                <div id="backtestResults" style="margin-top: 3rem; display: none;">
+                                    <div class="section-header">
+                                        <h3>Resultados de Simulación</h3>
+                                    </div>
+                                    <div id="btMetrics" class="dashboard-grid"
+                                        style="grid-template-columns: repeat(3, 1fr); margin-bottom: 2rem;"></div>
+
+                                    <h3>Curva de Equidad (Equity Curve)</h3>
+                                    <div
+                                        style="width: 100%; height: 350px; margin-bottom: 3rem; padding: 1.5rem; background: rgba(0,0,0,0.2); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                                        <canvas id="backtestChart"></canvas>
+                                    </div>
+
+                                    <h3>Libro de Operaciones Simulado</h3>
+                                    <div id="btTrades" style="margin-top: 1rem;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- SETTINGS SECTION -->
+                    <section id="settings" class="tab-content">
+                        <div class="glass full-card">
+                            <div class="glass-header">
+                                <h2>Preferencias Globales</h2>
+                                <i data-lucide="settings"></i>
+                            </div>
+                            <div class="glass-content">
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 3rem;">
+                                    <div>
+                                        <h3
+                                            style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px;">
+                                            <i data-lucide="key" style="color: var(--accent-blue);"></i> Credenciales de
+                                            Exchange
+                                        </h3>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Exchange Directo</label>
+                                            <select class="form-control">
+                                                <option>Binance (Spot)</option>
+                                                <option>Hyperliquid (Perpetuals)</option>
+                                                <option>Kraken</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>API Key</label>
+                                            <input type="password" class="form-control"
+                                                value="************************">
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Secret Key</label>
+                                            <input type="password" class="form-control"
+                                                value="************************">
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <h3
+                                            style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px;">
+                                            <i data-lucide="shield-alert" style="color: var(--accent-ruby);"></i>
+                                            Límites de Riesgo (Risk Control)
+                                        </h3>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Max Global Drawdown (%)</label>
+                                            <input type="number" class="form-control" value="10">
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Emergency Webhook</label>
+                                            <input type="text" class="form-control"
+                                                placeholder="https://discord.com/api/webhooks/...">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div
+                                    style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05);">
+                                    <button class="glass"
+                                        style="padding: 12px 32px; background: var(--accent-blue); color: white; border: none; font-weight: 700; cursor: pointer;">GUARDAR
+                                        TODA LA CONFIGURACIÓN</button>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Create Bot Modal -->
+                    <div id="createBotModal" class="modal-overlay" style="display: none;">
+                        <div class="modal-content glass">
+                            <div
+                                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                                <h2 style="margin: 0;">Configure New Bot</h2>
+                                <i data-lucide="x" id="closeModal" data-action="close-modal" class="close-modal-btn"
+                                    onclick="window.closeCreateBotModal()" style="cursor: pointer;"></i>
+                            </div>
+                            <div class="form-group">
+                                <label>Bot Unique ID</label>
+                                <input type="text" id="newBotId" class="form-control" placeholder="EMA-Bot-001">
+                            </div>
+                            <div class="form-group">
+                                <label>Strategy</label>
+                                <select id="newBotStrategy" class="form-control">
+                                    <option value="ema_cross">EMA Cross (Custom Parameters)</option>
+                                    <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
+                                    <option value="grid_trading">Grid Trading (Rango de Precios)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Executor (Modo de Ejecución)</label>
+                                <select id="newBotExecutor" class="form-control">
+                                    <option value="paper">📄 Paper Trading (Simulado)</option>
+                                    <option value="hyperliquid">⚡ Hyperliquid — MAINNET (Fondos Reales)</option>
+                                </select>
+                                <div id="executorWarning"
+                                    style="display:none; margin-top: 0.5rem; padding: 8px 12px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.4); border-radius: 8px; font-size: 0.78rem; color: #fca5a5;">
+                                    ⚠️ <strong>FONDOS REALES</strong> — Este bot operará con tus USDC en Mainnet de
+                                    Hyperliquid.
+                                    El
+                                    símbolo debe estar en formato <code>BTC/USDC:USDC</code>.
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Trading Pair (Symbol)</label>
+                                <input type="text" id="newBotSymbol" class="form-control" value="BTC/USDT">
+                                <div id="symbolHint"
+                                    style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                    Formato:
+                                    <code>BTC/USDT</code> para paper, <code>BTC/USDC:USDC</code> para Hyperliquid Perps.
+                                </div>
+                            </div>
+                            <div id="emaParams" style="display: block;">
+                                <div
+                                    style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="form-group">
+                                        <label>Fast EMA Period</label>
+                                        <input type="number" id="newBotFastEma" class="form-control" value="9">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Slow EMA Period</label>
+                                        <input type="number" id="newBotSlowEma" class="form-control" value="21">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Grid Specific Parameters -->
+                            <div id="gridParams" style="display: none;">
+                                <div
+                                    style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="form-group">
+                                        <label>Upper Limit ($)</label>
+                                        <input type="number" id="newBotUpperLimit" class="form-control" value="70000">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Lower Limit ($)</label>
+                                        <input type="number" id="newBotLowerLimit" class="form-control" value="60000">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Number of Grids (Rejillas)</label>
+                                    <input type="number" id="newBotNumGrids" class="form-control" value="10">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Initial Allocation (USD) <span
+                                        style="color: var(--text-muted); font-weight: 400; font-size:0.75rem;">(solo
+                                        Paper)</span></label>
+                                <input type="number" id="newBotAllocation" class="form-control" value="1000">
+                            </div>
+                            <button id="confirmCreateBot" style="width: 100%; margin-top: 1rem;">FINALIZAR Y LANZAR
+                                BOT</button>
+                        </div>
+                    </div>
+                    +
+                    + <!-- Edit Bot Modal -->
+                    + <div id="editBotModal" class="modal-overlay" style="display: none;">
+                        + <div class="modal-content glass">
+                            + <div
+                                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                                + <h2 style="margin: 0;">Edit Bot Configuration</h2>
+                                + <i data-lucide="x" class="close-modal-btn"
+                                    onclick="document.getElementById('editBotModal').style.display='none'"
+                                    style="cursor: pointer;"></i>
+                                <input type="hidden" id="editBotId">
+                                <div class="form-group">
+                                    <label>Symbol</label>
+                                    <input type="text" id="editBotSymbol" class="form-control" readonly
+                                        style="opacity: 0.6;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Strategy</label>
+                                    <input type="text" id="editBotStrategy" class="form-control" readonly
+                                        style="opacity: 0.6;">
+                                </div>
+
+                                <!-- Parameters Section (Visible based on strategy) -->
+                                <div id="editParamsContainer">
+                                    <!-- EMA Params -->
+                                    <div id="editEmaParams" style="display: none;">
+                                        <div
+                                            style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                            <div class="form-group">
+                                                <label>Fast EMA Period</label>
+                                                <input type="number" id="editBotFastEma" class="form-control">
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Slow EMA Period</label>
+                                                <input type="number" id="editBotSlowEma" class="form-control">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- Grid Params -->
+                                    <div id="editGridParams" style="display: none;">
+                                        <div
+                                            style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                            <div class="form-group">
+                                                <label>Upper Limit ($)</label>
+                                                <input type="number" id="editBotUpperLimit" class="form-control">
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Lower Limit ($)</label>
+                                                <input type="number" id="editBotLowerLimit" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Number of Grids</label>
+                                            <input type="number" id="editBotNumGrids" class="form-control">
+                                        </div>
+                                    </div>
+                                    <!-- Reinvest Params -->
+                                    <div id="editReinvestParams" style="display: none;">
+                                        <div class="form-group">
+                                            <label>Take Profit % (e.g. 0.02)</label>
+                                            <input type="number" step="0.001" id="editBotTpPct" class="form-control">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Allocation (USD)</label>
+                                    <input type="number" id="editBotAllocation" class="form-control">
+                                </div>
+                                <button id="confirmEditBot"
+                                    style="width: 100%; margin-top: 1rem; background: var(--accent-emerald);">GUARDAR
+                                    CAMBIOS</button>
+                            </div>
+                        </div>
+
+                        <div id="previewPopup" class="preview-popup" style="min-width: 250px; z-index: 100000;">
+                            <h4 id="previewTitle" style="margin: 0 0 8px 0; font-size: 0.9rem;">Market Preview</h4>
+                            <canvas id="previewCanvas" width="220" height="80"></canvas>
+
+                            <div id="previewConfig"
+                                style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 0.8rem;">
+                                <div style="font-weight: 600; color: var(--accent-blue); margin-bottom: 5px;">
+                                    Configuración:</div>
+                                <div id="previewConfigList" style="color: var(--text-secondary); line-height: 1.4;">
+                                    <!-- Dynamically populated -->
+                                </div>
+                            </div>
+
+                            <div id="previewStats"
+                                style="margin-top: 8px; font-size: 0.75rem; color: var(--text-secondary);">
+                            </div>
+
+                            <button id="previewEditBtn" class="glass"
+                                style="width: 100%; margin-top: 12px; padding: 8px; font-size: 0.75rem; color: var(--accent-blue); border: 1px solid var(--accent-blue); cursor: pointer;">
+                                <i data-lucide="settings-2"
+                                    style="width: 12px; height: 12px; margin-right: 4px; display: inline-block; vertical-align: middle;"></i>
+                                <span style="vertical-align: middle;">EDITAR CONFIGURACIÓN</span>
                             </button>
-                            <button id="createBotBtn" class="glass"
-                                style="padding: 8px 16px; border: 1px solid var(--accent-blue); color: var(--accent-blue); cursor: pointer;">+
-                                Create New Bot</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="glass-content">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                        <thead>
-                            <tr
-                                style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                <th style="padding: 1rem;">ID Bot</th>
-                                <th style="padding: 1rem;">Nombre</th>
-                                <th style="padding: 1rem;">Estrategia</th>
-                                <th style="padding: 1rem;">Estado</th>
-                                <th style="padding: 1rem;">Asignación</th>
-                                <th style="padding: 1rem;">PnL Realizado</th>
-                                <th style="padding: 1rem;">Uptime</th>
-                                <th style="padding: 1rem;">Éxito</th>
-                                <th style="padding: 1rem; text-align: right;">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody id="botTableBody">
-                            <!-- Injected via app.js -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
-        <!-- VAULT SECTION -->
-        <section id="vault" class="tab-content">
-            <header class="section-header" style="margin-bottom: 1.5rem;">
-                <h2 style="margin: 0;">Cápsula de Seguridad</h2>
-                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Bots archivados y
-                    configuraciones guardadas para su reutilización inmediata.</p>
-            </header>
-
-            <div class="bot-list glass">
-                <div class="glass-content">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                        <thead>
-                            <tr
-                                style="text-align: left; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                <th style="padding: 1rem;">Bot ID</th>
-                                <th style="padding: 1rem;">Strategy</th>
-                                <th style="padding: 1rem;">Allocation</th>
-                                <th style="padding: 1rem;">Last Status</th>
-                                <th style="padding: 1rem; text-align: right;">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="vaultTableBody">
-                            <!-- Injected via app.js -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
-        <!-- COMPARISON SECTION -->
-        <section id="comparison" class="tab-content">
-            <header class="section-header" style="margin-bottom: 2rem;">
-                <h2 style="margin: 0;">Independent Comparison</h2>
-                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Compare two assets
-                    side-by-side and launch bots directly.</p>
-            </header>
-
-            <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr; gap: 2rem;">
-                <div class="glass" style="padding: 2rem;">
-                    <h3 style="margin-bottom: 1.5rem; color: var(--accent-blue);">Asset A</h3>
-                    <div class="form-group" style="margin-bottom: 1.5rem;">
-                        <label>Symbol</label>
-                        <input type="text" id="compareSymbolA" class="form-control" value="BTC/USDT">
-                    </div>
-                    <div id="compareResultA" class="compare-result">
-                        <div class="stat-value" id="comparePriceA">---</div>
-                        <div class="stat-label">Last Price</div>
-                    </div>
-                    <button class="glass launch-btn" data-symbol-id="compareSymbolA"
-                        style="width: 100%; margin-top: 2rem; border-color: var(--accent-blue); color: var(--accent-blue);">Launch
-                        Bot A</button>
-                </div>
-
-                <div class="glass" style="padding: 2rem;">
-                    <h3 style="margin-bottom: 1.5rem; color: var(--accent-emerald);">Asset B</h3>
-                    <div class="form-group" style="margin-bottom: 1.5rem;">
-                        <label>Symbol</label>
-                        <input type="text" id="compareSymbolB" class="form-control" value="ETH/USDT">
-                    </div>
-                    <div id="compareResultB" class="compare-result">
-                        <div class="stat-value" id="comparePriceB">---</div>
-                        <div class="stat-label">Last Price</div>
-                    </div>
-                    <button class="glass launch-btn" data-symbol-id="compareSymbolB"
-                        style="width: 100%; margin-top: 2rem; border-color: var(--accent-emerald); color: var(--accent-emerald);">Launch
-                        Bot B</button>
-                </div>
-            </div>
-
-            <div class="glass" style="padding: 2rem; margin-top: 2rem;">
-                <button id="runComparisonBtn" class="kill-switch"
-                    style="width: 100%; background: var(--accent-blue);">EXECUTE SIDE-BY-SIDE ANALYSIS</button>
-            </div>
-        </section>
-
-        <!-- STRATEGIES SECTION -->
-        <section id="strategies" class="tab-content">
-            <header class="section-header" style="margin-bottom: 1.5rem;">
-                <h2 style="margin: 0;">Strategy Configuration</h2>
-                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem;">Configure the core
-                    parameters for your trading algorithms.</p>
-            </header>
-
-            <div class="dashboard-grid"
-                style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
-                <!-- EMA Cross Card -->
-                <div class="glass" style="padding: 1.5rem;">
-                    <div
-                        style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                        <div>
-                            <h3 style="margin: 0; color: var(--accent-blue);">EMA Cross</h3>
-                            <span style="font-size: 0.7rem; color: var(--text-muted);">Trend
-                                Following</span>
-                        </div>
-                        <i data-lucide="activity" style="color: var(--accent-blue);"></i>
-                    </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label style="font-size: 0.75rem;">Fast EMA Period</label>
-                        <input type="number" class="form-control" value="9" id="stratEmaFast">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label style="font-size: 0.75rem;">Slow EMA Period</label>
-                        <input type="number" class="form-control" value="21" id="stratEmaSlow">
-                    </div>
-                    <button class="glass"
-                        style="width: 100%; border-color: var(--accent-blue); color: var(--accent-blue);">Update
-                        Parameters</button>
-                </div>
-
-                <!-- Technical Pro Card -->
-                <div class="glass" style="padding: 1.5rem;">
-                    <div
-                        style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                        <div>
-                            <h3 style="margin: 0; color: var(--accent-emerald);">Technical Pro</h3>
-                            <span style="font-size: 0.7rem; color: var(--text-muted);">Multi-factor
-                                Analysis</span>
-                        </div>
-                        <i data-lucide="brain" style="color: var(--accent-emerald);"></i>
-                    </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label style="font-size: 0.75rem;">RSI Period</label>
-                        <input type="number" class="form-control" value="14" id="stratTechRsi">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label style="font-size: 0.75rem;">MACD Fast</label>
-                        <input type="number" class="form-control" value="12" id="stratTechMacd">
-                    </div>
-                    <button class="glass"
-                        style="width: 100%; border-color: var(--accent-emerald); color: var(--accent-emerald);">Update
-                        Parameters</button>
-                </div>
-            </div>
-        </section>
-
-        <!-- BACKTESTING SECTION -->
-        <section id="backtesting" class="tab-content">
-            <div class="backtest-container glass">
-                <div class="glass-header">
-                    <h2 style="margin: 0;">Laboratorio de Simulación Histórica</h2>
-                </div>
-                <div class="glass-content">
-                    <div class="form-group">
-                        <label>Par de Criptoactivos</label>
-                        <input type="text" id="btSymbol" class="form-control" value="BTC/USDT">
-                    </div>
-                    <div class="form-group">
-                        <label>Timeframe</label>
-                        <select id="btTimeframe" class="form-control">
-                            <option value="15m">15 Minutes</option>
-                            <option value="1h" selected>1 Hour</option>
-                            <option value="4h">4 Hours</option>
-                            <option value="1d">1 Day</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Algorithm</label>
-                        <select id="btStrategy" class="form-control">
-                            <option value="ema_cross">EMA Cross (5/20)</option>
-                            <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
-                        </select>
-                    </div>
-                    <button id="runBacktestBtn">RUN HISTORICAL SIMULATION</button>
-
-                    <div id="backtestResults" style="margin-top: 2rem; display: none;">
-                        <h3>Simulation Metrics</h3>
-                        <div id="btMetrics" class="dashboard-grid"
-                            style="grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;"></div>
-
-                        <h3>Equity Curve</h3>
-                        <div style="width: 100%; height: 300px; margin-bottom: 2rem;">
-                            <canvas id="backtestChart"></canvas>
                         </div>
 
-                        <h3>Simulation Trades</h3>
-                        <div id="btTrades"></div>
-                    </div>
-                </div>
-            </div>
-        </section>
+                        <!-- Field Selection Modal -->
+                        <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
+                            <div class="modal-content glass" style="max-width: 400px;">
+                                <div
+                                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+                                    <h2 style="margin: 0;">Select Visible Fields</h2>
+                                    <button id="closeFieldModal" class="glass"
+                                        style="padding: 5px 10px; cursor: pointer;">&times;</button>
+                                </div>
 
-        <!-- SETTINGS SECTION -->
-        <section id="settings" class="tab-content">
-            <div class="glass">
-                <div class="glass-header">
-                    <h2 style="margin: 0;">Platform Settings</h2>
-                </div>
-                <div class="glass-content">
-                    <p style="color: var(--text-secondary); margin-bottom: 2rem;">Manage your connection to
-                        exchanges
-                        and global risk parameters.</p>
+                                <div id="fieldOptions"
+                                    style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
+                                    <!-- Fields will be dynamically added here -->
+                                </div>
 
-                    <div style="max-width: 600px;">
-                        <h3 style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
-                            <i data-lucide="key" style="width: 16px;"></i> API Credentials
-                        </h3>
-                        <div class="form-group" style="margin-bottom: 1.5rem;">
-                            <label>Exchange Selection</label>
-                            <select class="form-control">
-                                <option>Binance (Spot)</option>
-                                <option>Kraken</option>
-                                <option>Coinbase Pro</option>
-                            </select>
+                                <div style="display: flex; gap: 1rem;">
+                                    <button id="saveFields" class="glass"
+                                        style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
+                                        Preferences</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label>API Key</label>
-                            <input type="password" class="form-control" value="************************"
-                                placeholder="Enter API Key">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 2rem;">
-                            <label>Secret Key</label>
-                            <input type="password" class="form-control" value="************************"
-                                placeholder="Enter Secret Key">
-                        </div>
-
-                        <h3 style="font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
-                            <i data-lucide="shield-alert" style="width: 16px;"></i> Global Risk Limits
-                        </h3>
-                        <div class="form-group" style="margin-bottom: 1rem;">
-                            <label>Max Global Drawdown (%)</label>
-                            <input type="number" class="form-control" value="10">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 2rem;">
-                            <label>Emergency Contact (Webhook)</label>
-                            <input type="text" class="form-control" placeholder="https://discord.com/api/webhooks/...">
-                        </div>
-
-                        <button class="glass"
-                            style="padding: 12px 24px; background: var(--accent-blue); color: white; border: none; font-weight: 600; cursor: pointer;">
-                            SAVE CONFIGURATION
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Create Bot Modal -->
-        <div id="createBotModal" class="modal-overlay" style="display: none;">
-            <div class="modal-content glass">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-                    <h2 style="margin: 0;">Configure New Bot</h2>
-                    <i data-lucide="x" id="closeModal" data-action="close-modal" class="close-modal-btn"
-                        onclick="window.closeCreateBotModal()" style="cursor: pointer;"></i>
-                </div>
-                <div class="form-group">
-                    <label>Bot Unique ID</label>
-                    <input type="text" id="newBotId" class="form-control" placeholder="EMA-Bot-001">
-                </div>
-                <div class="form-group">
-                    <label>Strategy</label>
-                    <select id="newBotStrategy" class="form-control">
-                        <option value="ema_cross">EMA Cross (Custom Parameters)</option>
-                        <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
-                        <option value="grid_trading">Grid Trading (Rango de Precios)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Executor (Modo de Ejecución)</label>
-                    <select id="newBotExecutor" class="form-control">
-                        <option value="paper">📄 Paper Trading (Simulado)</option>
-                        <option value="hyperliquid">⚡ Hyperliquid — MAINNET (Fondos Reales)</option>
-                    </select>
-                    <div id="executorWarning"
-                        style="display:none; margin-top: 0.5rem; padding: 8px 12px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.4); border-radius: 8px; font-size: 0.78rem; color: #fca5a5;">
-                        ⚠️ <strong>FONDOS REALES</strong> — Este bot operará con tus USDC en Mainnet de Hyperliquid. El
-                        símbolo debe estar en formato <code>BTC/USDC:USDC</code>.
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Trading Pair (Symbol)</label>
-                    <input type="text" id="newBotSymbol" class="form-control" value="BTC/USDT">
-                    <div id="symbolHint" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Formato:
-                        <code>BTC/USDT</code> para paper, <code>BTC/USDC:USDC</code> para Hyperliquid Perps.
-                    </div>
-                </div>
-                <div id="emaParams" style="display: block;">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                        <div class="form-group">
-                            <label>Fast EMA Period</label>
-                            <input type="number" id="newBotFastEma" class="form-control" value="9">
-                        </div>
-                        <div class="form-group">
-                            <label>Slow EMA Period</label>
-                            <input type="number" id="newBotSlowEma" class="form-control" value="21">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Grid Specific Parameters -->
-                <div id="gridParams" style="display: none;">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                        <div class="form-group">
-                            <label>Upper Limit ($)</label>
-                            <input type="number" id="newBotUpperLimit" class="form-control" value="70000">
-                        </div>
-                        <div class="form-group">
-                            <label>Lower Limit ($)</label>
-                            <input type="number" id="newBotLowerLimit" class="form-control" value="60000">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Number of Grids (Rejillas)</label>
-                        <input type="number" id="newBotNumGrids" class="form-control" value="10">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Initial Allocation (USD) <span
-                            style="color: var(--text-muted); font-weight: 400; font-size:0.75rem;">(solo
-                            Paper)</span></label>
-                    <input type="number" id="newBotAllocation" class="form-control" value="1000">
-                </div>
-                <button id="confirmCreateBot" style="width: 100%; margin-top: 1rem;">FINALIZAR Y LANZAR BOT</button>
-            </div>
-        </div>
-
-        <div id="previewPopup" class="preview-popup">
-            <h4 id="previewTitle" style="margin: 0 0 8px 0; font-size: 0.9rem;">Market Preview</h4>
-            <canvas id="previewCanvas" width="220" height="100"></canvas>
-            <div id="previewStats" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-secondary);"></div>
-        </div>
-
-        <!-- Field Selection Modal -->
-        <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
-            <div class="modal-content glass" style="max-width: 400px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-                    <h2 style="margin: 0;">Select Visible Fields</h2>
-                    <button id="closeFieldModal" class="glass"
-                        style="padding: 5px 10px; cursor: pointer;">&times;</button>
-                </div>
-
-                <div id="fieldOptions" style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
-                    <!-- Fields will be dynamically added here -->
-                </div>
-
-                <div style="display: flex; gap: 1rem;">
-                    <button id="saveFields" class="glass"
-                        style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
-                        Preferences</button>
-                </div>
-            </div>
-        </div>
-        </div>
-    </main>
+                    </div> <!-- closing .dashboard-container -->
+                </div> <!-- closing .content-container -->
+        </main>
+    </div> <!-- closing .app-shell -->
 
     <!-- CUSTOM CONFIRMATION MODAL -->
     <div id="customConfirmModal" class="modal-overlay" style="display: none;">
@@ -589,7 +743,8 @@
                 <h3 id="confirmTitle" style="margin: 0; color: var(--accent-blue);">Confirm Action</h3>
             </div>
             <div class="glass-content" style="padding: 2rem;">
-                <p id="confirmMessage" style="margin-bottom: 2rem; color: var(--text-secondary);">Are you sure you want
+                <p id="confirmMessage" style="margin-bottom: 2rem; color: var(--text-secondary);">Are you sure you
+                    want
                     to proceed?</p>
                 <div style="display: flex; gap: 1rem;">
                     <button id="cancelConfirm" class="glass"

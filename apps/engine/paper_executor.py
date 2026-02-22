@@ -49,3 +49,28 @@ class PaperTradingExecutor(BaseExecutionProvider):
         print(f"[PaperTrading] Executed {signal.side} {fill_amount} {signal.symbol} @ ${fill_price:,.2f} (Fee: ${fee:.2f})")
         
         return result
+    async def fetch_active_positions(self) -> list:
+        """
+        Simula el fetch de posiciones leyendo de la base de datos (PositionDB).
+        """
+        from apps.shared.database import SessionLocal
+        from apps.shared.models import PositionDB
+        
+        try:
+            with SessionLocal() as db:
+                open_pos = db.query(PositionDB).filter(PositionDB.is_open == True).all()
+                return [
+                    {
+                        'symbol': p.symbol,
+                        'side': p.side,
+                        'quantity': p.quantity,
+                        'entry_price': p.entry_price,
+                        'current_price': p.current_price,
+                        'unrealized_pnl': p.unrealized_pnl,
+                        'bot_id': p.bot_id
+                    }
+                    for p in open_pos
+                ]
+        except Exception as e:
+            print(f"Error fetching paper positions: {e}")
+            return []

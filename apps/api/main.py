@@ -19,6 +19,7 @@ from apps.reporting_engine.reporting import ReportingEngine, calculate_metrics
 from apps.shared.database import init_db, get_db
 from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB
 from apps.engine.paper_portfolio import PaperPortfolioDB
+from apps.engine.position_sync import PositionSyncService
 
 app = FastAPI(title="Trading Platform API Gateway")
 
@@ -180,6 +181,13 @@ async def create_bot(bot_config: dict):
         raise HTTPException(status_code=400, detail="Bot already exists or could not be started")
     return {"bot_id": bot_id, "status": BotStatus.RUNNING}
 
+@app.patch("/api/bots/{bot_id}")
+async def update_bot(bot_id: str, new_config: dict):
+    success = bot_manager.update_bot_config(bot_id, new_config)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return {"message": f"Bot {bot_id} configuration updated", "id": bot_id}
+
 @app.post("/api/bots/{bot_id}/stop")
 async def stop_bot(bot_id: str):
     success = bot_manager.stop_bot(bot_id)
@@ -300,7 +308,32 @@ async def run_backtest(params: dict):
         results = await engine.run(historical_data)
         return results
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/sync/positions")
+async def sync_positions():
+    """Sincroniza las posiciones del exchange con la DB local."""
+    # En una implementación real, elegiríamos el executor según la configuración
+    from apps.engine.paper_executor import PaperTradingExecutor
+    executor = PaperTradingExecutor() 
+    sync_service = PositionSyncService(executor)
+    results = await sync_service.sync_positions()
+    return results
+
+@app.post("/api/bots/adopt")
+async def adopt_bot(bot_id: str, symbol: str, strategy: str = "algo_expert"):
+    """Adopta una posición huérfana con un nuevo bot."""
+    config = {
+        "symbol": symbol,
+        "strategy": strategy,
+        "executor": "paper" # Por defecto para esta versión
+    }
+    success = await bot_manager.adopt_position(bot_id, symbol, strategy, config)
+    if success:
+        return {"message": f"Bot {bot_id} adopted position for {symbol}"}
+    raise HTTPException(status_code=400, detail="Could not adopt position")
 
 # Mount static files last
 static_dir = os.path.join(os.path.dirname(__file__), "static")

@@ -29,9 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const sections = document.querySelectorAll('.tab-content');
     const sectionTitle = document.getElementById('sectionTitle');
     const sectionSubtitle = document.getElementById('sectionSubtitle');
-    const topNav = document.querySelector('.top-nav');
+    const sidebar = document.querySelector('.sidebar');
     const menuToggle = document.getElementById('menuToggle');
-    const sidebarOverlay = document.getElementById('sidebarOverlay');
     const previewPopup = document.getElementById('previewPopup');
     const previewCanvas = document.getElementById('previewCanvas');
     const previewTitle = document.getElementById('previewTitle');
@@ -75,15 +74,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let botVisibleFields = ['Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Acciones'];
     const allBotFields = ['ID Bot', 'Nombre Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Uptime', 'Tasa Éxito', 'Acciones'];
 
-    // Sidebar/Nav Toggle Logic for Mobile (Overlay)
-    if (menuToggle && topNav && sidebarOverlay) {
-        const toggleMenuMobile = () => {
-            topNav.classList.toggle('active');
-            sidebarOverlay.classList.toggle('active');
-        };
-
-        menuToggle.addEventListener('click', toggleMenuMobile);
-        sidebarOverlay.addEventListener('click', toggleMenuMobile);
+    // Sidebar/Nav Toggle Logic for Mobile
+    if (menuToggle && sidebar) {
+        menuToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('active');
+        });
     }
 
     // Strategy Parameter Visibility
@@ -93,6 +88,32 @@ document.addEventListener('DOMContentLoaded', () => {
         newBotStrategy.addEventListener('change', () => {
             emaParams.style.display = newBotStrategy.value === 'ema_cross' ? 'block' : 'none';
         });
+    }
+
+    // Resizable Dashboard Persistence
+    const resizableOverview = document.getElementById('resizableOverview');
+    if (resizableOverview) {
+        // Load saved dimensions
+        const savedWidth = localStorage.getItem('dashboard-overview-width');
+        const savedHeight = localStorage.getItem('dashboard-overview-height');
+
+        if (savedWidth) resizableOverview.style.width = savedWidth;
+        if (savedHeight) resizableOverview.style.height = savedHeight;
+
+        // Save dimensions on resize
+        const resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                const { width, height } = entry.contentRect;
+                localStorage.setItem('dashboard-overview-width', width + 'px');
+                localStorage.setItem('dashboard-overview-height', height + 'px');
+
+                // Trigger chart resize if needed
+                if (window.performanceChart && typeof window.performanceChart.resize === 'function') {
+                    window.performanceChart.resize();
+                }
+            }
+        });
+        resizeObserver.observe(resizableOverview);
     }
 
     // Comparison Logic
@@ -199,10 +220,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (window.lucide) lucide.createIcons();
 
-            // Close menu on mobile after navigation
-            if (topNav && topNav.classList.contains('active')) {
-                topNav.classList.remove('active');
-                sidebarOverlay.classList.remove('active');
+            // Close sidebar on mobile after navigation
+            if (sidebar && sidebar.classList.contains('active')) {
+                sidebar.classList.remove('active');
             }
         });
     });
@@ -500,6 +520,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button class="glass bot-action" data-id="${bot.id}" data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="padding: 5px; color: ${bot.status === 'running' ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; cursor: pointer; border: none;" title="${bot.status === 'running' ? 'Stop Bot' : 'Start Bot'}">
                         <i data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="width: 16px; height: 16px;"></i>
                     </button>
+                    <button class="glass edit-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-blue); cursor: pointer; border: none;" title="Edit Config">
+                        <i data-lucide="settings-2" style="width: 16px; height: 16px;"></i>
+                    </button>
                     <button class="glass archive-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-blue); cursor: pointer; border: none;" title="Archive to Vault">
                         <i data-lucide="archive" style="width: 16px; height: 16px;"></i>
                     </button>
@@ -516,17 +539,22 @@ document.addEventListener('DOMContentLoaded', () => {
         // Attach hover events to bot rows
         botTableBody.querySelectorAll('.bot-row').forEach(row => {
             row.addEventListener('mouseenter', (e) => {
-                const botId = row.cells[0].textContent;
+                const botId = row.dataset.id;
+                const bot = bots.find(b => b.id === botId);
                 const mockData = Array.from({ length: 20 }, () => Math.random() * 50 + 100);
-                showPreview(e, `Bot Performance: ${botId}`, mockData, `Efficiency: 94% | Uptime: 99.9%`);
+                showPreview(e, `Bot Performance: ${botId}`, mockData, `Efficiency: 94% | Uptime: 99.9%`, bot);
             });
-            row.addEventListener('mouseleave', () => {
-                if (typeof hidePreview === 'function') hidePreview();
-                else if (previewPopup) previewPopup.style.display = 'none';
+            row.addEventListener('mouseleave', (e) => {
+                // Only hide if NOT moving into the preview popup
+                if (e.relatedTarget && e.relatedTarget.closest('.preview-popup')) return;
+                hidePreview();
             });
             row.addEventListener('mousemove', (e) => {
                 if (previewPopup && previewPopup.style.display === 'block') {
-                    updatePreviewPosition(e);
+                    // Only update position if NOT over the popup itself
+                    if (!e.target.closest('.preview-popup')) {
+                        updatePreviewPosition(e);
+                    }
                 }
             });
         });
@@ -983,15 +1011,42 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fill();
     }
 
-    function showPreview(e, title, data, stats) {
+    function showPreview(e, title, data, stats, bot = null) {
         if (!previewPopup) return;
 
         previewTitle.textContent = title;
         previewStats.textContent = stats;
 
+        // Populate Config
+        const configList = document.getElementById('previewConfigList');
+        if (configList && bot && bot.config) {
+            let configHtml = `• Symbol: ${bot.config.symbol || 'N/A'}<br>`;
+            configHtml += `• Allocation: $${bot.config.allocation || 0}<br>`;
+
+            if (bot.strategy.toLowerCase().includes('ema_cross')) {
+                configHtml += `• Fast/Slow EMA: ${bot.config.fast_ema || 9}/${bot.config.slow_ema || 21}`;
+            } else if (bot.strategy.toLowerCase().includes('grid_trading')) {
+                configHtml += `• Grids: ${bot.config.num_grids || 10} (${bot.config.lower_limit}-${bot.config.upper_limit})`;
+            } else if (bot.strategy.toLowerCase().includes('dynamic_reinvest')) {
+                configHtml += `• TP Pct: ${((bot.config.take_profit_pct || 0.02) * 100).toFixed(1)}%`;
+            }
+            configList.innerHTML = configHtml;
+        }
+
+        // Setup Edit Button
+        const editBtn = document.getElementById('previewEditBtn');
+        if (editBtn && bot) {
+            editBtn.onclick = (event) => {
+                event.stopPropagation();
+                showEditBotModal(bot);
+                hidePreview();
+            };
+        }
+
         previewPopup.style.display = 'block';
         updatePreviewPosition(e);
         drawSparkline(previewCanvas, data);
+        if (window.lucide) lucide.createIcons();
     }
 
     function updatePreviewPosition(e) {
@@ -1013,13 +1068,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Global mousemove for floating popup refinement
     document.addEventListener('mousemove', (e) => {
         if (previewPopup && previewPopup.style.display === 'block') {
-            const isOverInteractive = e.target.closest('.trade-entry') || e.target.closest('tr');
+            const isOverInteractive = e.target.closest('.trade-entry') || e.target.closest('tr') || e.target.closest('.preview-popup');
             if (!isOverInteractive) {
                 hidePreview();
-            } else {
-                updatePreviewPosition(e);
             }
         }
+    });
+
+    previewPopup.addEventListener('mouseleave', () => {
+        hidePreview();
     });
 
     // View Options Logic
@@ -1100,6 +1157,84 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAIMarketAnalysis();
     setInterval(updateAIMarketAnalysis, 30000);
     setInterval(simulateRealTimeData, 5000);
+
+    function showEditBotModal(bot) {
+        const modal = document.getElementById('editBotModal');
+        if (!modal) return;
+
+        // Populate basic info
+        document.getElementById('editBotId').value = bot.id;
+        document.getElementById('editBotSymbol').value = bot.config?.symbol || 'N/A';
+        document.getElementById('editBotStrategy').value = bot.strategy || 'N/A';
+        document.getElementById('editBotAllocation').value = bot.config?.allocation || 0;
+
+        // Reset all param containers
+        document.getElementById('editEmaParams').style.display = 'none';
+        document.getElementById('editGridParams').style.display = 'none';
+        document.getElementById('editReinvestParams').style.display = 'none';
+
+        // Show relevant fields based on strategy
+        const strategy = bot.strategy.toLowerCase();
+        if (strategy.includes('ema_cross')) {
+            document.getElementById('editEmaParams').style.display = 'block';
+            document.getElementById('editBotFastEma').value = bot.config?.fast_ema || 9;
+            document.getElementById('editBotSlowEma').value = bot.config?.slow_ema || 21;
+        } else if (strategy.includes('grid_trading')) {
+            document.getElementById('editGridParams').style.display = 'block';
+            document.getElementById('editBotUpperLimit').value = bot.config?.upper_limit || 70000;
+            document.getElementById('editBotLowerLimit').value = bot.config?.lower_limit || 60000;
+            document.getElementById('editBotNumGrids').value = bot.config?.num_grids || 10;
+        } else if (strategy.includes('dynamic_reinvest')) {
+            document.getElementById('editReinvestParams').style.display = 'block';
+            document.getElementById('editBotTpPct').value = bot.config?.take_profit_pct || 0.02;
+        }
+
+        modal.style.display = 'flex';
+    }
+
+    async function handleEditBotSubmit() {
+        const botId = document.getElementById('editBotId').value;
+        const strategy = document.getElementById('editBotStrategy').value.toLowerCase();
+
+        const newConfig = {
+            allocation: parseFloat(document.getElementById('editBotAllocation').value)
+        };
+
+        if (strategy.includes('ema_cross')) {
+            newConfig.fast_ema = parseInt(document.getElementById('editBotFastEma').value);
+            newConfig.slow_ema = parseInt(document.getElementById('editBotSlowEma').value);
+        } else if (strategy.includes('grid_trading')) {
+            newConfig.upper_limit = parseFloat(document.getElementById('editBotUpperLimit').value);
+            newConfig.lower_limit = parseFloat(document.getElementById('editBotLowerLimit').value);
+            newConfig.num_grids = parseInt(document.getElementById('editBotNumGrids').value);
+        } else if (strategy.includes('dynamic_reinvest')) {
+            newConfig.take_profit_pct = parseFloat(document.getElementById('editBotTpPct').value);
+        }
+
+        try {
+            const res = await fetch(`/api/bots/${botId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newConfig)
+            });
+
+            if (res.ok) {
+                document.getElementById('editBotModal').style.display = 'none';
+                fetchBots(); // Refresh table
+            } else {
+                const err = await res.json();
+                alert('Error updating bot: ' + (err.detail || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Update error:', error);
+            alert('Error connecting to server.');
+        }
+    }
+
+    const confirmEditBot = document.getElementById('confirmEditBot');
+    if (confirmEditBot) {
+        confirmEditBot.addEventListener('click', handleEditBotSubmit);
+    }
 
     // Initial load and periodic refresh
     fetchBots();

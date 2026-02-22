@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import List, Dict
 from apps.shared.models import TradeSignal, RiskResult, ExecutionResult
 
 class BaseStrategy(ABC):
@@ -14,4 +15,9 @@ class BaseRiskProvider(ABC):
 class BaseExecutionProvider(ABC):
     @abstractmethod
     async def execute(self, signal: TradeSignal) -> ExecutionResult:
+        pass
+
+    @abstractmethod
+    async def fetch_active_positions(self) -> List[Dict]:
+        """Fetch all current open positions from the exchange."""
         pass

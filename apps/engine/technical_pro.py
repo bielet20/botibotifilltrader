@@ -25,6 +25,8 @@ class TechnicalProStrategy(BaseStrategy):
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        # Evitar división por cero
+        loss = loss.replace(0, 1e-9)
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
         current_rsi = df['rsi'].iloc[-1]

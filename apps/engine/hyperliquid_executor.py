@@ -91,6 +91,29 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 avg_price=0,
                 timestamp=datetime.utcnow()
             )
+    async def fetch_active_positions(self) -> list:
+        """
+        Obtiene las posiciones abiertas actuales en Hyperliquid.
+        """
+        try:
+            positions = await self.exchange.fetch_positions()
+            # Filtrar solo las que tienen cantidad > 0
+            active = []
+            for p in positions:
+                # CCXT suele normalizar la info de posiciones
+                size = float(p.get('contracts', 0) or p.get('size', 0) or 0)
+                if size != 0:
+                    active.append({
+                        'symbol': p.get('symbol'),
+                        'side': 'long' if size > 0 else 'short',
+                        'quantity': abs(size),
+                        'entry_price': float(p.get('entryPrice', 0) or 0),
+                        'current_price': float(p.get('markPrice', 0) or 0),
+                        'unrealized_pnl': float(p.get('unrealizedPnl', 0) or 0)
+                    })
+            return active
+        except Exception as e:
+            print(f"Error fetching Hyperliquid positions: {e}")
+            return []
         finally:
-            # Cerramos la sesión del exchange para liberar recursos
             await self.exchange.close()
