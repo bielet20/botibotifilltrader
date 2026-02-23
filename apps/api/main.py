@@ -186,7 +186,14 @@ async def list_bots(db: Session = Depends(get_db)):
 
 @app.post("/api/bots")
 async def create_bot(bot_config: dict):
-    bot_id = bot_config.get("id", f"bot_{len(bot_manager.active_bots) + 1}")
+    bot_id = bot_config.get("id", "").strip()
+    if not bot_id:
+        # Fallback to auto-generation if not provided at all, but only if empty string wasn't explicitly sent
+        if "id" not in bot_config or not bot_config["id"]:
+            bot_id = f"bot_{len(bot_manager.active_bots) + 1}"
+        else:
+            raise HTTPException(status_code=400, detail="Bot ID cannot be empty or whitespace")
+            
     success = bot_manager.start_bot(bot_id, bot_config)
     if not success:
         raise HTTPException(status_code=400, detail="Bot already exists or could not be started")
