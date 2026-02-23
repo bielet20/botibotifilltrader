@@ -310,13 +310,17 @@ class BotManager:
     def delete_bot(self, bot_id: str):
         # 1. Stop if running
         self.stop_bot(bot_id)
-        # 2. Delete from DB
+        # 2. Delete from DB and close positions
         with SessionLocal() as db:
             bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
             if bot_entry:
                 db.delete(bot_entry)
-                db.commit()
-                return True
+            
+            # Close associate positions too
+            db.query(PositionDB).filter(PositionDB.bot_id == bot_id).update({"is_open": False, "updated_at": datetime.utcnow()})
+            
+            db.commit()
+            return True
         return False
 
     def archive_bot(self, bot_id: str):

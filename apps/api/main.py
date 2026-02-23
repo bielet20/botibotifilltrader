@@ -137,6 +137,17 @@ async def get_positions(db: Session = Depends(get_db)):
         })
     return result
 
+@app.post("/api/positions/{position_id}/close")
+async def close_position(position_id: str, db: Session = Depends(get_db)):
+    position = db.query(PositionDB).filter(PositionDB.id == position_id).first()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    
+    position.is_open = False
+    position.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": f"Position {position_id} closed manually"}
+
 @app.get("/api/orders")
 async def get_order_log(limit: int = 100, db: Session = Depends(get_db)):
     orders = db.query(OrderLogDB).order_by(OrderLogDB.created_at.desc()).limit(limit).all()

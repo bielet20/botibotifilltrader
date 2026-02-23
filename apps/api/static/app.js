@@ -964,12 +964,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td style="padding: 0.75rem; font-weight: 600; color: ${upnlColor};">${upnl >= 0 ? '+' : ''}$${upnl.toFixed(4)}</td>
                     <td style="padding: 0.75rem; color: #facc15;">$${(p.fee_paid || 0).toFixed(4)}</td>
                     <td style="padding: 0.75rem; color: var(--text-muted); font-size: 0.75rem;">${openedAt}</td>
+                    <td style="padding: 0.75rem; text-align: right;">
+                        <button class="glass" onclick="window.closePosition('${p.id}')" style="padding: 4px 8px; font-size: 0.65rem; color: var(--accent-ruby); border-color: var(--accent-ruby); cursor: pointer;">CERRAR</button>
+                    </td>
                 </tr>`;
             }).join('');
         } catch (e) {
             console.error('fetchPositions error:', e);
         }
     }
+
+    window.closePosition = async function (posId) {
+        if (!confirm('¿Estás seguro de que deseas cerrar esta posición manualmente? Esta acción solo actualiza el estado local.')) return;
+        try {
+            const res = await fetch(`/api/positions/${posId}/close`, { method: 'POST' });
+            if (res.ok) {
+                fetchPositions();
+                fetchStats();
+            } else {
+                alert('Error al cerrar la posición');
+            }
+        } catch (e) {
+            console.error('closePosition error:', e);
+        }
+    };
 
     // --- REFINEMENTS: SPARKLINES & PREVIEWS ---
 
