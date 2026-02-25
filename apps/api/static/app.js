@@ -127,35 +127,28 @@ document.addEventListener('DOMContentLoaded', () => {
             runComparisonBtn.disabled = true;
 
             try {
-                // We'll use a public market data API if available, or just mock it for now
-                // since we don't have a specific comparison endpoint yet.
-                // However, our backend has fetch_ticker. We could expose a comparison API.
-                // For now, let's try to fetch both independently if possible.
-
+                // Fetch live prices from our new market API
                 const [resA, resB] = await Promise.all([
-                    fetch(`/api/backtest/run`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol: symA, timeframe: '1h', strategy: 'ema_cross', limit: 1 })
-                    }),
-                    fetch(`/api/backtest/run`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol: symB, timeframe: '1h', strategy: 'ema_cross', limit: 1 })
-                    })
+                    fetch(`/api/market/price/${encodeURIComponent(symA)}`),
+                    fetch(`/api/market/price/${encodeURIComponent(symB)}`)
                 ]);
 
                 if (resA.ok && resB.ok) {
                     const dataA = await resA.json();
                     const dataB = await resB.json();
 
-                    document.getElementById('comparePriceA').innerText = `$${(40000 + Math.random() * 1000).toFixed(2)}`;
-                    document.getElementById('comparePriceB').innerText = `$${(2500 + Math.random() * 100).toFixed(2)}`;
+                    document.getElementById('comparePriceA').innerText = `$${(dataA.last || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                    document.getElementById('comparePriceB').innerText = `$${(dataB.last || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-                    alert('Análisis comparativo completo. Métricas actualizadas.');
+                    // updateAIMarketAnalysis() can be called here to refresh insights
+                } else {
+                    const errA = !resA.ok ? await resA.json().catch(() => ({ detail: 'Error A' })) : null;
+                    const errB = !resB.ok ? await resB.json().catch(() => ({ detail: 'Error B' })) : null;
+                    alert(`Error fetching prices: ${errA?.detail || ''} ${errB?.detail || ''}`);
                 }
             } catch (error) {
                 console.error('Comparison error:', error);
+                alert('Connection error fetching market data.');
             } finally {
                 runComparisonBtn.innerText = 'EXECUTE SIDE-BY-SIDE ANALYSIS';
                 runComparisonBtn.disabled = false;

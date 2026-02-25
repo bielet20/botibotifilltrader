@@ -20,6 +20,7 @@ from apps.shared.database import init_db, get_db
 from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB
 from apps.engine.paper_portfolio import PaperPortfolioDB
 from apps.engine.position_sync import PositionSyncService
+from apps.engine.market_data import MarketDataEngine
 
 app = FastAPI(title="Trading Platform API Gateway")
 
@@ -34,11 +35,31 @@ risk_engine = RiskEngine()
 bot_manager = BotManager()
 ai_engine = AIEngine()
 reporting_engine = ReportingEngine()
+market_data_engine = MarketDataEngine() # Instance for live market data
 
 @app.on_event("startup")
 async def startup_event():
     init_db()
     await bot_manager.resume_bots()
+
+@app.get("/api/market/price/{symbol:path}")
+async def get_market_price(symbol: str):
+    """Obtiene el precio real de mercado para un símbolo dado."""
+    try:
+        # Re-initialize engine to ensure fresh connection if closed
+        engine = MarketDataEngine()
+        ticker = await engine.fetch_ticker(symbol)
+        if not ticker:
+            raise HTTPException(status_code=404, detail=f"Ticker not found for {symbol}")
+        return {
+            "symbol": symbol,
+            "last": ticker.get('last'),
+            "bid": ticker.get('bid'),
+            "ask": ticker.get('ask'),
+            "timestamp": ticker.get('timestamp')
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
