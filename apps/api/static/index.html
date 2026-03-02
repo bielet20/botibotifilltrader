@@ -12,12 +12,16 @@
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700&display=swap"
         rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=1.2">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 
 <body>
+    <button id="menuToggle" class="menu-toggle" aria-label="Abrir menú">
+        <i data-lucide="menu"></i>
+    </button>
+
     <div class="app-shell">
         <!-- Institutional Sidebar -->
         <aside class="sidebar">
@@ -68,6 +72,8 @@
             </div>
         </aside>
 
+        <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
         <!-- Main Workspace -->
         <main>
             <div class="content-container">
@@ -85,7 +91,7 @@
                             <!-- Stats Row -->
                             <div class="stat-card glass">
                                 <div class="glass-header">
-                                    <h3>PnL Realizado</h3>
+                                    <h3>PnL Neto (fees incl.)</h3>
                                     <i data-lucide="trending-up" class="pulse-icon"></i>
                                 </div>
                                 <div class="glass-content">
@@ -155,8 +161,7 @@
                                 <div class="glass-content">
                                     <p id="aiMarketSummary"
                                         style="color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
-                                        Analizando mercados... La red neuronal está supervisando activamente la flota
-                                        para optimizar el rendimiento.
+                                        Sin datos reales todavía. Esperando actualización del backend.
                                     </p>
                                     <div
                                         style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
@@ -166,12 +171,12 @@
                                         <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
                                             <div
                                                 style="flex: 1; height: 3px; background: rgba(59, 130, 246, 0.1); border-radius: 2px;">
-                                                <div
-                                                    style="width: 94%; height: 100%; background: var(--accent-blue); border-radius: 2px;">
+                                                <div id="aiModelConfidenceBar"
+                                                    style="width: 0%; height: 100%; background: var(--accent-blue); border-radius: 2px;">
                                                 </div>
                                             </div>
-                                            <span
-                                                style="font-size: 0.75rem; font-weight: 700; color: var(--accent-blue);">94%</span>
+                                            <span id="aiModelConfidenceValue"
+                                                style="font-size: 0.75rem; font-weight: 700; color: var(--accent-blue);">0%</span>
                                         </div>
                                     </div>
                                 </div>
@@ -224,6 +229,17 @@
                                     <!-- Feed injected by JS -->
                                 </div>
                             </div>
+
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <h2>🚨 Alertas de Producción</h2>
+                                    <button id="refreshProductionAlerts" class="glass"
+                                        style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">ACTUALIZAR</button>
+                                </div>
+                                <div class="glass-content" id="productionAlertsContent">
+                                    <!-- Injected via app.js -->
+                                </div>
+                            </div>
                         </div> <!-- closing .dashboard-grid -->
                     </section>
 
@@ -231,7 +247,12 @@
                     <section id="bots" class="tab-content">
                         <div class="glass full-card">
                             <div class="glass-header">
-                                <h2>Flota de Bots Algorítmicos</h2>
+                                <div>
+                                    <h2>Flota de Bots Algorítmicos</h2>
+                                    <p id="botManagerInfo" style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                        Mis Bots: activos o en espera (no archivados).
+                                    </p>
+                                </div>
                                 <div style="display: flex; gap: 1rem;">
                                     <button class="glass view-options-btn" data-target="bots">
                                         <i data-lucide="eye"></i> Columnas
@@ -248,7 +269,7 @@
                                             <th>ID Bot</th>
                                             <th>Nombre</th>
                                             <th>Estrategia</th>
-                                            <th>Estado</th>
+                                            <th>Estado Operativo</th>
                                             <th>Asignación</th>
                                             <th>PnL Realizado</th>
                                             <th>Uptime</th>
@@ -272,6 +293,9 @@
                                     <h2>Cápsula de Seguridad</h2>
                                     <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">Bots
                                         archivados y configuraciones guardadas para su reutilización inmediata.</p>
+                                    <p id="vaultManagerInfo" style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                        Aquí verás presets guardados y bots archivados.
+                                    </p>
                                 </div>
                             </div>
                             <div class="glass-content" style="padding: 0;">
@@ -281,7 +305,7 @@
                                             <th>Bot ID</th>
                                             <th>Strategy</th>
                                             <th>Allocation</th>
-                                            <th>Last Status</th>
+                                            <th>Estado Guardado</th>
                                             <th style="text-align: right;">Actions</th>
                                         </tr>
                                     </thead>
@@ -403,6 +427,7 @@
                                 <button id="runComparisonBtn" class="glass"
                                     style="width: 100%; height: 60px; background: var(--accent-blue); color: white; border: none; font-weight: 700; font-size: 1rem; letter-spacing: 0.1em; cursor: pointer;">EJECUTAR
                                     ANÁLISIS COMPARATIVO PROFUNDO</button>
+                                <div id="compareLastUpdate" style="margin-top: 8px; text-align: right; font-size: 0.75rem; color: var(--text-muted);">Última actualización: --:--:--</div>
                             </div>
                         </div>
                     </section>
@@ -442,6 +467,43 @@
                                     style="width: 100%; padding: 15px; background: var(--accent-blue); color: white; border: none; font-weight: 700;">INICIAR
                                     SIMULACIÓN ESTATÍSTICA</button>
 
+                                <div style="margin-top: 1.25rem; padding: 1rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(0,0,0,0.18);">
+                                    <h3 style="margin: 0 0 0.75rem 0;">Datos del activo (Visualizar / Exportar / Importar)</h3>
+                                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 0.75rem;">
+                                        <div class="form-group" style="margin-bottom: 0;">
+                                            <label>Fuente</label>
+                                            <select id="assetDataSource" class="form-control">
+                                                <option value="live" selected>Live (Binance)</option>
+                                                <option value="imported">Imported (Local)</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 0;">
+                                            <label>Límite velas</label>
+                                            <input type="number" id="assetDataLimit" class="form-control" value="300" min="20" max="2000">
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 0;">
+                                            <label>Formato export/import</label>
+                                            <select id="assetDataFormat" class="form-control">
+                                                <option value="json" selected>JSON</option>
+                                                <option value="csv">CSV</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 0.75rem;">
+                                        <button id="visualizeAssetDataBtn" class="glass" style="border: 1px solid var(--accent-blue); color: var(--accent-blue);">VISUALIZAR DATOS</button>
+                                        <button id="exportAssetDataBtn" class="glass" style="border: 1px solid var(--accent-emerald); color: var(--accent-emerald);">EXPORTAR DATOS</button>
+                                        <button id="importAssetDataBtn" class="glass" style="border: 1px solid var(--accent-ruby); color: var(--accent-ruby);">IMPORTAR DATOS</button>
+                                    </div>
+
+                                    <textarea id="assetDataImportInput" class="form-control" rows="6" placeholder="Pega aquí JSON (array candles) o CSV con columnas: time,open,high,low,close,volume"></textarea>
+                                    <div id="assetDataStatus" style="margin-top: 0.6rem; font-size: 0.8rem; color: var(--text-secondary);">Sin datos cargados.</div>
+
+                                    <div style="margin-top: 0.9rem; width: 100%; height: 260px; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06);">
+                                        <canvas id="assetDataChart"></canvas>
+                                    </div>
+                                </div>
+
                                 <div id="backtestResults" style="margin-top: 3rem; display: none;">
                                     <div class="section-header">
                                         <h3>Resultados de Simulación</h3>
@@ -479,21 +541,29 @@
                                         </h3>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
                                             <label>Exchange Directo</label>
-                                            <select class="form-control">
-                                                <option>Binance (Spot)</option>
-                                                <option>Hyperliquid (Perpetuals)</option>
-                                                <option>Kraken</option>
+                                            <select id="settingsExchange" class="form-control">
+                                                <option value="hyperliquid" selected>Hyperliquid (Perpetuals)</option>
                                             </select>
                                         </div>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>API Key</label>
-                                            <input type="password" class="form-control"
-                                                value="************************">
+                                            <label>Wallet Address (0x...)</label>
+                                            <input id="settingsWalletAddress" type="text" class="form-control"
+                                                placeholder="0x...">
                                         </div>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>Secret Key</label>
-                                            <input type="password" class="form-control"
-                                                value="************************">
+                                            <label>Signing Key (0x...)</label>
+                                            <input id="settingsSigningKey" type="password" class="form-control"
+                                                placeholder="0x...">
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Entorno por defecto</label>
+                                            <select id="settingsUseTestnet" class="form-control">
+                                                <option value="true">Testnet (simulación real)</option>
+                                                <option value="false">Mainnet (mercado real)</option>
+                                            </select>
+                                        </div>
+                                        <div id="settingsStatus" style="font-size: 0.9rem; color: var(--text-secondary); background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px;">
+                                            Estado: cargando configuración...
                                         </div>
                                     </div>
 
@@ -516,9 +586,9 @@
                                 </div>
                                 <div
                                     style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05);">
-                                    <button class="glass"
+                                    <button id="saveHyperliquidSettingsBtn" class="glass"
                                         style="padding: 12px 32px; background: var(--accent-blue); color: white; border: none; font-weight: 700; cursor: pointer;">GUARDAR
-                                        TODA LA CONFIGURACIÓN</button>
+                                        Y VALIDAR CREDENCIALES</button>
                                 </div>
                             </div>
                         </div>
@@ -526,7 +596,7 @@
 
                     <!-- Create Bot Modal -->
                     <div id="createBotModal" class="modal-overlay" style="display: none;">
-                        <div class="modal-content glass">
+                        <div class="modal-content glass create-bot-modal-content">
                             <div
                                 style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                                 <h2 style="margin: 0;">Configure New Bot</h2>
@@ -538,11 +608,25 @@
                                 <input type="text" id="newBotId" class="form-control" placeholder="EMA-Bot-001">
                             </div>
                             <div class="form-group">
+                                <label>Preset recomendado (10 bots seguros)</label>
+                                <select id="newBotPreset" class="form-control">
+                                    <option value="">Manual / Sin preset</option>
+                                </select>
+                                <div id="presetQuickDoc"
+                                    style="margin-top: 8px; padding: 10px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; color: var(--text-secondary); font-size: 0.78rem;">
+                                    Selecciona un preset para cargar estrategia, símbolo y parámetros base.
+                                </div>
+                            </div>
+                            <div class="form-group">
                                 <label>Strategy</label>
                                 <select id="newBotStrategy" class="form-control">
                                     <option value="ema_cross">EMA Cross (Custom Parameters)</option>
                                     <option value="technical_pro">Technical Pro (RSI/MACD/Fib)</option>
                                     <option value="grid_trading">Grid Trading (Rango de Precios)</option>
+                                    <option value="algo_expert">Algo Expert (Híbrida con filtros)</option>
+                                    <option value="dynamic_reinvest">Dynamic Reinvest (TP + reinversión)</option>
+                                    <option value="adaptive_learning">Adaptive Learning (Tendencia + Histórico)</option>
+                                    <option value="paired_balanced">Paired Balanced (Long/Short dos activos)</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -600,27 +684,77 @@
                                     <input type="number" id="newBotNumGrids" class="form-control" value="10">
                                 </div>
                             </div>
+                            <div id="pairParams" style="display: none;">
+                                <div class="form-group">
+                                    <label>Segundo Activo (Pair B)</label>
+                                    <input type="text" id="newBotPairSymbolB" class="form-control" value="ETH/USDT">
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="form-group">
+                                        <label>Entry Z-Score</label>
+                                        <input type="number" step="0.1" id="newBotPairEntryZ" class="form-control" value="1.4">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Exit Z-Score</label>
+                                        <input type="number" step="0.05" id="newBotPairExitZ" class="form-control" value="0.25">
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="form-group">
+                                        <label>Stop Loss % (pair)</label>
+                                        <input type="number" step="0.001" id="newBotPairStopLossPct" class="form-control" value="0.015">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Take Profit % (pair)</label>
+                                        <input type="number" step="0.001" id="newBotPairTakeProfitPct" class="form-control" value="0.01">
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="form-group">
+                                        <label>Profit Lock %</label>
+                                        <input type="number" step="0.001" id="newBotPairProfitLockPct" class="form-control" value="0.004">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Min Correlación</label>
+                                        <input type="number" step="0.05" id="newBotPairMinCorr" class="form-control" value="0.35">
+                                    </div>
+                                </div>
+                            </div>
                             <div class="form-group">
                                 <label>Initial Allocation (USD) <span
                                         style="color: var(--text-muted); font-weight: 400; font-size:0.75rem;">(solo
                                         Paper)</span></label>
                                 <input type="number" id="newBotAllocation" class="form-control" value="1000">
                             </div>
-                            <button id="confirmCreateBot" style="width: 100%; margin-top: 1rem;">FINALIZAR Y LANZAR
-                                BOT</button>
+                            <div class="form-group">
+                                <label>Análisis inteligente de asignación</label>
+                                <button id="analyzeBotBtn" class="glass"
+                                    style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; padding: 10px;">ANALIZAR
+                                    Y RECOMENDAR (CORTO/MEDIO/LARGO)</button>
+                                <div id="advisorResults"
+                                    style="margin-top: 10px; display: none; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px;"></div>
+                            </div>
+                            <div class="create-bot-actions" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 1rem;">
+                                <button id="confirmSaveVaultBot"
+                                    style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue); background: transparent;">GUARDAR
+                                    EN CÁPSULA</button>
+                                <button id="confirmCreateBot" style="width: 100%;">FINALIZAR Y LANZAR BOT</button>
+                            </div>
                         </div>
                     </div>
-                    +
-                    + <!-- Edit Bot Modal -->
-                    + <div id="editBotModal" class="modal-overlay" style="display: none;">
-                        + <div class="modal-content glass">
-                            + <div
-                                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-                                + <h2 style="margin: 0;">Edit Bot Configuration</h2>
-                                + <i data-lucide="x" class="close-modal-btn"
+                    <!-- Edit Bot Modal -->
+                    <div id="editBotModal" class="modal-overlay" style="display: none;">
+                        <div class="modal-content glass edit-bot-modal-content">
+                            <div class="edit-bot-modal-header">
+                                <h2 style="margin: 0;">Edit Bot Configuration</h2>
+                                <i data-lucide="x" class="close-modal-btn"
                                     onclick="document.getElementById('editBotModal').style.display='none'"
                                     style="cursor: pointer;"></i>
-                                <input type="hidden" id="editBotId">
+                            </div>
+
+                            <input type="hidden" id="editBotId">
+
+                            <div class="edit-bot-modal-grid">
                                 <div class="form-group">
                                     <label>Symbol</label>
                                     <input type="text" id="editBotSymbol" class="form-control" readonly
@@ -631,61 +765,59 @@
                                     <input type="text" id="editBotStrategy" class="form-control" readonly
                                         style="opacity: 0.6;">
                                 </div>
-
-                                <!-- Parameters Section (Visible based on strategy) -->
-                                <div id="editParamsContainer">
-                                    <!-- EMA Params -->
-                                    <div id="editEmaParams" style="display: none;">
-                                        <div
-                                            style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                                            <div class="form-group">
-                                                <label>Fast EMA Period</label>
-                                                <input type="number" id="editBotFastEma" class="form-control">
-                                            </div>
-                                            <div class="form-group">
-                                                <label>Slow EMA Period</label>
-                                                <input type="number" id="editBotSlowEma" class="form-control">
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <!-- Grid Params -->
-                                    <div id="editGridParams" style="display: none;">
-                                        <div
-                                            style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                                            <div class="form-group">
-                                                <label>Upper Limit ($)</label>
-                                                <input type="number" id="editBotUpperLimit" class="form-control">
-                                            </div>
-                                            <div class="form-group">
-                                                <label>Lower Limit ($)</label>
-                                                <input type="number" id="editBotLowerLimit" class="form-control">
-                                            </div>
-                                        </div>
-                                        <div class="form-group">
-                                            <label>Number of Grids</label>
-                                            <input type="number" id="editBotNumGrids" class="form-control">
-                                        </div>
-                                    </div>
-                                    <!-- Reinvest Params -->
-                                    <div id="editReinvestParams" style="display: none;">
-                                        <div class="form-group">
-                                            <label>Take Profit % (e.g. 0.02)</label>
-                                            <input type="number" step="0.001" id="editBotTpPct" class="form-control">
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Allocation (USD)</label>
-                                    <input type="number" id="editBotAllocation" class="form-control">
-                                </div>
-                                <button id="confirmEditBot"
-                                    style="width: 100%; margin-top: 1rem; background: var(--accent-emerald);">GUARDAR
-                                    CAMBIOS</button>
                             </div>
-                        </div>
 
-                        <div id="previewPopup" class="preview-popup" style="min-width: 250px; z-index: 100000;">
+                            <div id="editParamsContainer" class="edit-bot-params-wrap">
+                                <div id="editEmaParams" style="display: none;">
+                                    <div class="edit-bot-modal-grid">
+                                        <div class="form-group">
+                                            <label>Fast EMA Period</label>
+                                            <input type="number" id="editBotFastEma" class="form-control">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Slow EMA Period</label>
+                                            <input type="number" id="editBotSlowEma" class="form-control">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="editGridParams" style="display: none;">
+                                    <div class="edit-bot-modal-grid">
+                                        <div class="form-group">
+                                            <label>Upper Limit ($)</label>
+                                            <input type="number" id="editBotUpperLimit" class="form-control">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Lower Limit ($)</label>
+                                            <input type="number" id="editBotLowerLimit" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Number of Grids</label>
+                                        <input type="number" id="editBotNumGrids" class="form-control">
+                                    </div>
+                                </div>
+
+                                <div id="editReinvestParams" style="display: none;">
+                                    <div class="form-group">
+                                        <label>Take Profit % (e.g. 0.02)</label>
+                                        <input type="number" step="0.001" id="editBotTpPct" class="form-control">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Allocation (USD)</label>
+                                <input type="number" id="editBotAllocation" class="form-control">
+                            </div>
+
+                            <button id="confirmEditBot"
+                                style="width: 100%; margin-top: 0.5rem; background: var(--accent-emerald);">GUARDAR
+                                CAMBIOS</button>
+                        </div>
+                    </div>
+
+                    <div id="previewPopup" class="preview-popup" style="min-width: 250px; z-index: 100000;">
                             <h4 id="previewTitle" style="margin: 0 0 8px 0; font-size: 0.9rem;">Market Preview</h4>
                             <canvas id="previewCanvas" width="220" height="80"></canvas>
 
@@ -710,28 +842,28 @@
                             </button>
                         </div>
 
-                        <!-- Field Selection Modal -->
-                        <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
-                            <div class="modal-content glass" style="max-width: 400px;">
-                                <div
-                                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-                                    <h2 style="margin: 0;">Select Visible Fields</h2>
-                                    <button id="closeFieldModal" class="glass"
-                                        style="padding: 5px 10px; cursor: pointer;">&times;</button>
-                                </div>
+                    <!-- Field Selection Modal -->
+                    <div id="fieldSelectorModal" class="modal-overlay" style="display: none;">
+                        <div class="modal-content glass" style="max-width: 400px;">
+                            <div
+                                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+                                <h2 style="margin: 0;">Select Visible Fields</h2>
+                                <button id="closeFieldModal" class="glass"
+                                    style="padding: 5px 10px; cursor: pointer;">&times;</button>
+                            </div>
 
-                                <div id="fieldOptions"
-                                    style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
-                                    <!-- Fields will be dynamically added here -->
-                                </div>
+                            <div id="fieldOptions"
+                                style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem;">
+                                <!-- Fields will be dynamically added here -->
+                            </div>
 
-                                <div style="display: flex; gap: 1rem;">
-                                    <button id="saveFields" class="glass"
-                                        style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
-                                        Preferences</button>
-                                </div>
+                            <div style="display: flex; gap: 1rem;">
+                                <button id="saveFields" class="glass"
+                                    style="flex: 1; padding: 12px; background: var(--accent-blue); color: white; border: none; cursor: pointer;">Save
+                                    Preferences</button>
                             </div>
                         </div>
+                    </div>
                     </div> <!-- closing .dashboard-container -->
                 </div> <!-- closing .content-container -->
         </main>
@@ -757,7 +889,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=1.2"></script>
+    <script src="/static/app.js?v=2.8"></script>
     <script>
         lucide.createIcons();
     </script>

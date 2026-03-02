@@ -4,8 +4,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 import uuid
+import json
+import csv
+import io
+import urllib.request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import ccxt.async_support as ccxt
 
 from apps.engine.backtester import BacktestEngine
 from apps.engine.ema_cross import EMACrossStrategy
@@ -13,13 +18,17 @@ from apps.engine.technical_pro import TechnicalProStrategy
 from apps.engine.algo_expert import AlgoExpertStrategy
 from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
 from apps.engine.risk import RiskEngine
+from apps.engine.bot_advisor import build_bot_advice
 from apps.bot_manager.manager import BotManager
 from apps.ai_engine.engine import AIEngine
 from apps.reporting_engine.reporting import ReportingEngine, calculate_metrics
+from apps.reporting_engine.production_guard import ProductionGuardService
 from apps.shared.database import init_db, get_db
-from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB
+from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB, BotAlertDB
+from apps.shared.bot_presets import list_bot_presets, get_bot_preset
 from apps.engine.paper_portfolio import PaperPortfolioDB
 from apps.engine.position_sync import PositionSyncService
+from apps.engine.hyperliquid_executor import HyperliquidExecutor
 from apps.engine.market_data import MarketDataEngine
 
 app = FastAPI(title="Trading Platform API Gateway")
@@ -35,12 +44,192 @@ risk_engine = RiskEngine()
 bot_manager = BotManager()
 ai_engine = AIEngine()
 reporting_engine = ReportingEngine()
-market_data_engine = MarketDataEngine() # Instance for live market data
+production_guard = ProductionGuardService(bot_manager)
+
+
+def _project_root_path() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _env_file_path() -> str:
+    return os.path.join(_project_root_path(), ".env")
+
+
+def _sanitize_asset_key(value: str) -> str:
+    key = (value or "").strip().upper()
+    safe = []
+    for ch in key:
+        safe.append(ch if ch.isalnum() else "_")
+    out = "".join(safe).strip("_")
+    return out or "ASSET"
+
+
+def _import_data_dir() -> str:
+    path = os.path.join(_project_root_path(), "reports", "imported_market_data")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _normalize_candles(candles: list) -> list:
+    normalized = []
+    for item in candles or []:
+        try:
+            time_v = int(float(item.get("time")))
+            normalized.append(
+                {
+                    "time": time_v,
+                    "open": float(item.get("open")),
+                    "high": float(item.get("high")),
+                    "low": float(item.get("low")),
+                    "close": float(item.get("close")),
+                    "volume": float(item.get("volume", 0.0) or 0.0),
+                }
+            )
+        except Exception:
+            continue
+    normalized.sort(key=lambda c: c["time"])
+    return normalized
+
+
+def _parse_csv_candles(data_str: str) -> list:
+    reader = csv.DictReader(io.StringIO(data_str or ""))
+    rows = []
+    for row in reader:
+        rows.append(
+            {
+                "time": row.get("time"),
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+                "volume": row.get("volume", 0.0),
+            }
+        )
+    return _normalize_candles(rows)
+
+
+def _candles_to_csv(candles: list) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["time", "open", "high", "low", "close", "volume"])
+    writer.writeheader()
+    for row in candles:
+        writer.writerow(row)
+    return output.getvalue()
+
+
+def _import_file_path(symbol: str, timeframe: str) -> str:
+    file_name = f"{_sanitize_asset_key(symbol)}__{_sanitize_asset_key(timeframe)}.json"
+    return os.path.join(_import_data_dir(), file_name)
+
+
+def _save_imported_candles(symbol: str, timeframe: str, candles: list):
+    payload = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "candles": candles,
+    }
+    with open(_import_file_path(symbol, timeframe), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+
+def _load_imported_candles(symbol: str, timeframe: str) -> list:
+    path = _import_file_path(symbol, timeframe)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return _normalize_candles(payload.get("candles") or [])
+
+
+def _read_env_values() -> dict:
+    path = _env_file_path()
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _write_env_values(updates: dict):
+    path = _env_file_path()
+    existing = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            existing = f.read().splitlines()
+
+    found = set()
+    out = []
+    for raw in existing:
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#") and "=" in raw:
+            key, _ = raw.split("=", 1)
+            key = key.strip()
+            if key in updates:
+                out.append(f"{key}={updates[key]}")
+                found.add(key)
+                continue
+        out.append(raw)
+
+    for key, value in updates.items():
+        if key not in found:
+            out.append(f"{key}={value}")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out).rstrip() + "\n")
+
+
+def _mask_wallet(wallet: str) -> str:
+    if not wallet or len(wallet) < 10:
+        return ""
+    return f"{wallet[:8]}...{wallet[-6:]}"
+
+
+def _public_account_value(wallet: str, use_testnet: bool) -> float:
+    if not wallet:
+        return 0.0
+    url = "https://api.hyperliquid-testnet.xyz/info" if use_testnet else "https://api.hyperliquid.xyz/info"
+    payload = json.dumps({"type": "clearinghouseState", "user": wallet}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    margin = data.get("marginSummary") or {}
+    return float(margin.get("accountValue") or 0.0)
+
+
+async def _check_private_auth(wallet: str, signing_key: str, use_testnet: bool) -> tuple[bool, str]:
+    exchange = ccxt.hyperliquid({"privateKey": signing_key, "walletAddress": wallet})
+    if use_testnet:
+        exchange.set_sandbox_mode(True)
+    try:
+        await exchange.fetch_balance()
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        await exchange.close()
 
 @app.on_event("startup")
 async def startup_event():
     init_db()
     await bot_manager.resume_bots()
+    await production_guard.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await production_guard.stop()
 
 @app.get("/api/market/price/{symbol:path}")
 async def get_market_price(symbol: str):
@@ -76,6 +265,141 @@ async def health_check(db: Session = Depends(get_db)):
         "running_bots": running_bots,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+@app.get("/api/settings/hyperliquid")
+async def get_hyperliquid_settings():
+    env = _read_env_values()
+    wallet = env.get("HYPERLIQUID_WALLET_ADDRESS", "")
+    signing_key = env.get("HYPERLIQUID_SIGNING_KEY", "")
+    use_testnet = env.get("HYPERLIQUID_USE_TESTNET", "True").strip().lower() == "true"
+
+    wallet_ok = HyperliquidExecutor._is_valid_wallet(wallet)
+    key_ok = HyperliquidExecutor._is_valid_private_key(signing_key)
+
+    testnet_value = 0.0
+    mainnet_value = 0.0
+    if wallet_ok:
+        try:
+            testnet_value = _public_account_value(wallet, True)
+        except Exception:
+            pass
+        try:
+            mainnet_value = _public_account_value(wallet, False)
+        except Exception:
+            pass
+
+    mainnet_auth_ok = False
+    mainnet_auth_error = ""
+    if wallet_ok and key_ok:
+        mainnet_auth_ok, mainnet_auth_error = await _check_private_auth(wallet, signing_key, False)
+
+    return {
+        "wallet_address": wallet,
+        "wallet_masked": _mask_wallet(wallet),
+        "signing_key_present": bool(signing_key),
+        "use_testnet": use_testnet,
+        "checks": {
+            "wallet_format_ok": wallet_ok,
+            "signing_key_format_ok": key_ok,
+            "mainnet_auth_ok": mainnet_auth_ok,
+            "mainnet_auth_error": mainnet_auth_error if not mainnet_auth_ok else "",
+            "testnet_account_value": testnet_value,
+            "mainnet_account_value": mainnet_value,
+            "ready_for_real_market": bool(wallet_ok and key_ok and mainnet_auth_ok and mainnet_value > 0),
+        },
+    }
+
+
+@app.post("/api/settings/hyperliquid/save")
+async def save_hyperliquid_settings(payload: dict = None):
+    payload = payload or {}
+    wallet = str(payload.get("wallet_address") or "").strip()
+    signing_key = str(payload.get("signing_key") or "").strip()
+    use_testnet = bool(payload.get("use_testnet", True))
+
+    if not HyperliquidExecutor._is_valid_wallet(wallet):
+        raise HTTPException(status_code=400, detail="Wallet inválida. Debe ser 0x + 40 hex")
+    if not HyperliquidExecutor._is_valid_private_key(signing_key):
+        raise HTTPException(status_code=400, detail="Signing key inválida. Debe ser 0x + 64 hex")
+
+    _write_env_values(
+        {
+            "HYPERLIQUID_WALLET_ADDRESS": wallet,
+            "HYPERLIQUID_SIGNING_KEY": signing_key,
+            "HYPERLIQUID_USE_TESTNET": "True" if use_testnet else "False",
+        }
+    )
+
+    selected_auth_ok, selected_auth_error = await _check_private_auth(wallet, signing_key, use_testnet)
+
+    try:
+        testnet_value = _public_account_value(wallet, True)
+    except Exception:
+        testnet_value = 0.0
+    try:
+        mainnet_value = _public_account_value(wallet, False)
+    except Exception:
+        mainnet_value = 0.0
+
+    mainnet_auth_ok, _ = await _check_private_auth(wallet, signing_key, False)
+
+    return {
+        "saved": True,
+        "wallet_masked": _mask_wallet(wallet),
+        "use_testnet": use_testnet,
+        "checks": {
+            "selected_env": "testnet" if use_testnet else "mainnet",
+            "selected_env_auth_ok": selected_auth_ok,
+            "selected_env_auth_error": selected_auth_error if not selected_auth_ok else "",
+            "testnet_account_value": testnet_value,
+            "mainnet_account_value": mainnet_value,
+            "mainnet_auth_ok": mainnet_auth_ok,
+            "ready_for_real_market": bool(mainnet_auth_ok and mainnet_value > 0),
+        },
+    }
+
+
+@app.get("/api/production/status")
+async def get_production_status():
+    return production_guard.latest_status()
+
+
+@app.post("/api/production/scan")
+async def run_production_scan():
+    return await production_guard.scan_once(trigger="manual")
+
+
+@app.get("/api/production/alerts")
+async def get_production_alerts(limit: int = 50, only_open: bool = False, db: Session = Depends(get_db)):
+    query = db.query(BotAlertDB).order_by(BotAlertDB.created_at.desc())
+    if only_open:
+        query = query.filter(BotAlertDB.acknowledged == False)
+    alerts = query.limit(limit).all()
+    return [
+        {
+            "id": alert.id,
+            "created_at": alert.created_at,
+            "bot_id": alert.bot_id,
+            "level": alert.level,
+            "title": alert.title,
+            "message": alert.message,
+            "reason_code": alert.reason_code,
+            "data": alert.data,
+            "acknowledged": alert.acknowledged,
+        }
+        for alert in alerts
+    ]
+
+
+@app.post("/api/production/alerts/{alert_id}/ack")
+async def acknowledge_production_alert(alert_id: str, db: Session = Depends(get_db)):
+    alert = db.query(BotAlertDB).filter(BotAlertDB.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.acknowledged = True
+    db.commit()
+    return {"message": f"Alert {alert_id} acknowledged"}
 
 @app.get("/api/strategies")
 async def list_strategies():
@@ -113,8 +437,171 @@ async def list_strategies():
                 {"key": "lower_limit", "default": 60000},
                 {"key": "num_grids", "default": 10}
             ]
+        },
+        {
+            "id": "adaptive_learning",
+            "name": "Adaptive Learning",
+            "description": "Autogestión con aprendizaje de tendencia/histórico y reinversión dinámica.",
+            "params": [
+                {"key": "adaptive_short_window", "default": 12},
+                {"key": "adaptive_long_window", "default": 48},
+                {"key": "adaptive_base_amount", "default": 0.01},
+                {"key": "reinvest_ratio", "default": 0.35},
+                {"key": "self_managed", "default": True}
+            ]
         }
     ]
+
+
+@app.post("/api/market/compare")
+async def compare_market_symbols(payload: dict = None):
+    payload = payload or {}
+    symbol_a = (payload.get("symbol_a") or "BTC/USDT").strip() or "BTC/USDT"
+    symbol_b = (payload.get("symbol_b") or "ETH/USDT").strip() or "ETH/USDT"
+
+    mde = MarketDataEngine('binance')
+    try:
+        ticker_a = await mde.fetch_ticker(symbol_a)
+        ticker_b = await mde.fetch_ticker(symbol_b)
+
+        price_a = float(ticker_a.get("last") or 0.0)
+        price_b = float(ticker_b.get("last") or 0.0)
+
+        if price_a <= 0 or price_b <= 0:
+            raise HTTPException(status_code=400, detail="Could not fetch real market prices for one or both symbols")
+
+        return {
+            "symbol_a": symbol_a,
+            "price_a": price_a,
+            "symbol_b": symbol_b,
+            "price_b": price_b,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "binance",
+        }
+    finally:
+        await mde.close()
+
+
+async def _resolve_market_candles(symbol: str, timeframe: str, limit: int, source: str) -> tuple[list, str]:
+    src = (source or "live").strip().lower()
+    if src == "imported":
+        imported = _load_imported_candles(symbol, timeframe)
+        return imported[-limit:] if limit > 0 else imported, "imported"
+
+    mde = MarketDataEngine("binance")
+    try:
+        candles = await mde.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        return _normalize_candles(candles), "live"
+    finally:
+        await mde.close()
+
+
+@app.post("/api/market/data/import")
+async def import_market_data(payload: dict = None):
+    payload = payload or {}
+    symbol = (payload.get("symbol") or "BTC/USDT").strip() or "BTC/USDT"
+    timeframe = (payload.get("timeframe") or "1h").strip() or "1h"
+    data_format = (payload.get("format") or "json").strip().lower()
+    data_raw = payload.get("data")
+
+    if not data_raw:
+        raise HTTPException(status_code=400, detail="Missing import data")
+
+    try:
+        if data_format == "csv":
+            candles = _parse_csv_candles(str(data_raw))
+        else:
+            parsed = json.loads(data_raw) if isinstance(data_raw, str) else data_raw
+            if isinstance(parsed, dict) and "candles" in parsed:
+                parsed = parsed.get("candles")
+            if not isinstance(parsed, list):
+                raise ValueError("Invalid JSON format; expected array of candles")
+            candles = _normalize_candles(parsed)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid import format: {e}")
+
+    if not candles:
+        raise HTTPException(status_code=400, detail="No valid candles found in imported data")
+
+    _save_imported_candles(symbol, timeframe, candles)
+    return {
+        "imported": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "rows": len(candles),
+        "first_time": candles[0]["time"],
+        "last_time": candles[-1]["time"],
+        "source": "imported",
+    }
+
+
+@app.post("/api/market/data/fetch")
+async def fetch_market_data(payload: dict = None):
+    payload = payload or {}
+    symbol = (payload.get("symbol") or "BTC/USDT").strip() or "BTC/USDT"
+    timeframe = (payload.get("timeframe") or "1h").strip() or "1h"
+    source = (payload.get("source") or "live").strip().lower()
+    limit = int(payload.get("limit") or 300)
+    limit = max(20, min(limit, 2000))
+
+    candles, resolved_source = await _resolve_market_candles(symbol, timeframe, limit, source)
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"No candles available for {symbol} ({resolved_source})")
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": resolved_source,
+        "rows": len(candles),
+        "candles": candles,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/market/data/export")
+async def export_market_data(payload: dict = None):
+    payload = payload or {}
+    symbol = (payload.get("symbol") or "BTC/USDT").strip() or "BTC/USDT"
+    timeframe = (payload.get("timeframe") or "1h").strip() or "1h"
+    source = (payload.get("source") or "live").strip().lower()
+    data_format = (payload.get("format") or "json").strip().lower()
+    limit = int(payload.get("limit") or 500)
+    limit = max(20, min(limit, 5000))
+
+    candles, resolved_source = await _resolve_market_candles(symbol, timeframe, limit, source)
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"No candles available for {symbol} ({resolved_source})")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    base_name = f"{_sanitize_asset_key(symbol)}_{_sanitize_asset_key(timeframe)}_{resolved_source}_{stamp}"
+
+    if data_format == "csv":
+        content = _candles_to_csv(candles)
+        filename = f"{base_name}.csv"
+    else:
+        content = json.dumps(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "source": resolved_source,
+                "rows": len(candles),
+                "candles": candles,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        filename = f"{base_name}.json"
+
+    return {
+        "exported": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": resolved_source,
+        "format": data_format,
+        "rows": len(candles),
+        "filename": filename,
+        "content": content,
+    }
 
 @app.get("/api/stats")
 async def get_stats(db: Session = Depends(get_db)):
@@ -122,6 +609,7 @@ async def get_stats(db: Session = Depends(get_db)):
     total_trades = len(trades)
     total_fees = sum(t.fee or 0 for t in trades)
     total_pnl = sum(t.pnl or 0 for t in trades)
+    net_pnl = total_pnl - total_fees
     total_volume = sum((t.price or 0) * (t.amount or 0) for t in trades)
     wins = sum(1 for t in trades if (t.pnl or 0) > 0)
     win_rate = round((wins / total_trades * 100), 2) if total_trades > 0 else 0
@@ -131,6 +619,7 @@ async def get_stats(db: Session = Depends(get_db)):
         "total_trades": total_trades,
         "total_fees": round(total_fees, 4),
         "total_pnl": round(total_pnl, 4),
+        "net_pnl": round(net_pnl, 4),
         "total_volume": round(total_volume, 2),
         "win_rate": win_rate,
         "wins": wins,
@@ -204,6 +693,141 @@ async def activate_kill_switch():
 async def list_bots(db: Session = Depends(get_db)):
     db_bots = db.query(BotDB).all()
     return db_bots
+
+
+@app.get("/api/bot-presets")
+async def list_bot_presets_api():
+    return {"presets": list_bot_presets()}
+
+
+@app.post("/api/bot-advisor/analyze")
+async def analyze_bot_options(payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    symbol = payload.get("symbol", "BTC/USDT")
+    allocation = payload.get("allocation", 500)
+    return await build_bot_advice(db, symbol=symbol, allocation=allocation)
+
+
+@app.post("/api/bot-advisor/execute")
+async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    horizon = (payload.get("horizon") or "").strip().lower()
+    symbol = payload.get("symbol", "BTC/USDT")
+    allocation = payload.get("allocation", 500)
+
+    if horizon not in {"corto", "medio", "largo"}:
+        raise HTTPException(status_code=400, detail="horizon must be one of: corto, medio, largo")
+
+    analysis = await build_bot_advice(db, symbol=symbol, allocation=allocation)
+    rec = next((item for item in analysis.get("recommendations", []) if item.get("horizon") == horizon), None)
+    if not rec:
+        raise HTTPException(status_code=404, detail="No recommendation available for selected horizon")
+
+    if rec.get("recommended_action") in {"tune_existing", "reduce_risk"} and rec.get("recommended_bot_id") and rec.get("edited_config"):
+        bot_id = rec.get("recommended_bot_id")
+        success = bot_manager.update_bot_config(bot_id, rec.get("edited_config") or {})
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Recommended bot {bot_id} not found")
+
+        return {
+            "executed": True,
+            "action": rec.get("recommended_action"),
+            "bot_id": bot_id,
+            "horizon": horizon,
+            "message": f"Bot {bot_id} updated using advisor recommendation ({rec.get('recommended_action')})",
+        }
+
+    config = (rec.get("new_bot_config") or {}).copy()
+    new_bot_id = f"advisor_{horizon}_{uuid.uuid4().hex[:6]}"
+    config["id"] = new_bot_id
+
+    success = bot_manager.start_bot(new_bot_id, config)
+    if not success:
+        raise HTTPException(status_code=400, detail="Unable to create advisor bot")
+
+    return {
+        "executed": True,
+        "action": "create_new",
+        "bot_id": new_bot_id,
+        "horizon": horizon,
+        "message": f"Advisor created bot {new_bot_id}",
+    }
+
+
+@app.post("/api/bot-presets/{preset_id}/create")
+async def create_bot_from_preset(preset_id: str, payload: dict = None):
+    preset = get_bot_preset(preset_id)
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    payload = payload or {}
+    overrides = payload.get("overrides", {}) if isinstance(payload, dict) else {}
+
+    base_config = preset.get("config", {}).copy()
+    base_config.update(overrides)
+
+    bot_id = (payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+    if not bot_id:
+        bot_id = f"{preset_id}_{uuid.uuid4().hex[:6]}"
+
+    base_config["id"] = bot_id
+
+    success = bot_manager.start_bot(bot_id, base_config)
+    if not success:
+        raise HTTPException(status_code=400, detail="Bot already exists or could not be started")
+
+    return {
+        "bot_id": bot_id,
+        "status": BotStatus.RUNNING,
+        "preset_id": preset_id,
+        "preset_name": preset.get("name"),
+    }
+
+
+@app.post("/api/bot-presets/{preset_id}/save")
+async def save_bot_from_preset_to_vault(
+    preset_id: str,
+    payload: dict = None,
+    db: Session = Depends(get_db),
+):
+    preset = get_bot_preset(preset_id)
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    payload = payload or {}
+    overrides = payload.get("overrides", {}) if isinstance(payload, dict) else {}
+
+    base_config = preset.get("config", {}).copy()
+    base_config.update(overrides)
+
+    bot_id = (payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+    if not bot_id:
+        bot_id = f"{preset_id}_{uuid.uuid4().hex[:6]}"
+
+    existing = db.query(BotDB).filter(BotDB.id == bot_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Bot ID already exists")
+
+    base_config["id"] = bot_id
+
+    bot_entry = BotDB(
+        id=bot_id,
+        strategy=base_config.get("strategy", preset.get("strategy", "ema_cross")),
+        status=BotStatus.STOPPED,
+        config=base_config,
+        is_archived=True,
+    )
+    db.add(bot_entry)
+    db.commit()
+
+    return {
+        "bot_id": bot_id,
+        "status": BotStatus.STOPPED,
+        "is_archived": True,
+        "preset_id": preset_id,
+        "preset_name": preset.get("name"),
+        "message": "Bot saved in Vault without launch",
+    }
 
 @app.post("/api/bots")
 async def create_bot(bot_config: dict):

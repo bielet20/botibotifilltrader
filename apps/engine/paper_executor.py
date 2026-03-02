@@ -43,6 +43,7 @@ class PaperTradingExecutor(BaseExecutionProvider):
             status="filled",
             filled_amount=fill_amount,
             avg_price=fill_price,
+            fee=fee,
             timestamp=datetime.utcnow()
         )
         

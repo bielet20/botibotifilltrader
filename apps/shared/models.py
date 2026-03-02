@@ -31,12 +31,15 @@ class RiskResult(BaseModel):
     approved: bool
     reason: Optional[str] = None
     original_signal: TradeSignal
+    emergency_exit: bool = False
 
 class ExecutionResult(BaseModel):
     order_id: str
     status: str
     filled_amount: float
     avg_price: float
+    fee: float = 0.0
+    realized_pnl: float = 0.0
     timestamp: datetime
 
 # --- SQLAlchemy Models ---
@@ -108,6 +111,7 @@ class PositionDB(Base):
     side = Column(String(10), nullable=False)         # long / short
     entry_price = Column(Float, nullable=False)
     quantity = Column(Float, nullable=False)
+    leverage = Column(Float, default=1.0)
     current_price = Column(Float, nullable=True)
     unrealized_pnl = Column(Float, default=0.0)
     fee_paid = Column(Float, default=0.0)
@@ -115,3 +119,30 @@ class PositionDB(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_open = Column(Boolean, default=True)
     meta = Column(JSON, default={})
+
+
+class BotAlertDB(Base):
+    """Alertas operativas y de productividad por bot."""
+    __tablename__ = "bot_alerts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    bot_id = Column(String(100), nullable=False)
+    level = Column(String(20), default="info")  # info / warning / critical
+    title = Column(String(255), nullable=False)
+    message = Column(String(1000), nullable=False)
+    reason_code = Column(String(100), nullable=True)
+    data = Column(JSON, default={})
+    acknowledged = Column(Boolean, default=False)
+
+
+class BotLearningStateDB(Base):
+    """Estado persistente de aprendizaje por bot y símbolo."""
+    __tablename__ = "bot_learning_state"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    bot_id = Column(String(100), nullable=False)
+    symbol = Column(String(30), nullable=False)
+    strategy = Column(String(100), nullable=True)
+    state = Column(JSON, default={})
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

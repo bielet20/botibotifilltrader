@@ -1,5 +1,24 @@
 // Dashboard Application Logic
 
+const LOCAL_API_ORIGIN = 'http://127.0.0.1:8000';
+const shouldUseLocalApiOrigin = !(window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
+    || window.location.port !== '8000';
+
+if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (resource, init) => {
+        if (!shouldUseLocalApiOrigin || typeof resource !== 'string') {
+            return originalFetch(resource, init);
+        }
+
+        if (resource.startsWith('/')) {
+            return originalFetch(`${LOCAL_API_ORIGIN}${resource}`, init);
+        }
+
+        return originalFetch(resource, init);
+    };
+}
+
 // Global helper to close modal - placed outside DOMContentLoaded for global access
 window.closeCreateBotModal = function () {
     console.log("EXEC_CLOSE_MODAL"); // Log for subagent monitoring
@@ -31,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sectionSubtitle = document.getElementById('sectionSubtitle');
     const sidebar = document.querySelector('.sidebar');
     const menuToggle = document.getElementById('menuToggle');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
     const previewPopup = document.getElementById('previewPopup');
     const previewCanvas = document.getElementById('previewCanvas');
     const previewTitle = document.getElementById('previewTitle');
@@ -39,6 +59,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const fieldOptions = document.getElementById('fieldOptions');
     const closeFieldModal = document.getElementById('closeFieldModal');
     const saveFields = document.getElementById('saveFields');
+    const newBotPreset = document.getElementById('newBotPreset');
+    const presetQuickDoc = document.getElementById('presetQuickDoc');
+    const advisorResults = document.getElementById('advisorResults');
+    const productionAlertsContent = document.getElementById('productionAlertsContent');
+    const refreshProductionAlerts = document.getElementById('refreshProductionAlerts');
+    const settingsWalletAddressInput = document.getElementById('settingsWalletAddress');
+    const settingsSigningKeyInput = document.getElementById('settingsSigningKey');
+    const settingsUseTestnetSelect = document.getElementById('settingsUseTestnet');
+    const settingsStatus = document.getElementById('settingsStatus');
+    const saveHyperliquidSettingsBtn = document.getElementById('saveHyperliquidSettingsBtn');
+
+    let botPresets = [];
+    let advisorMap = {};
 
     // Custom Confirmation Modal Elements
     const customConfirmModal = document.getElementById('customConfirmModal');
@@ -78,6 +111,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (menuToggle && sidebar) {
         menuToggle.addEventListener('click', () => {
             sidebar.classList.toggle('active');
+            if (sidebarOverlay) sidebarOverlay.classList.toggle('active');
+        });
+    }
+
+    if (sidebarOverlay && sidebar) {
+        sidebarOverlay.addEventListener('click', () => {
+            sidebar.classList.remove('active');
+            sidebarOverlay.classList.remove('active');
         });
     }
 
@@ -117,43 +158,186 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Comparison Logic
+    let comparisonInterval = null;
+    const compareSymbolAInput = document.getElementById('compareSymbolA');
+    const compareSymbolBInput = document.getElementById('compareSymbolB');
+    const comparePriceAEl = document.getElementById('comparePriceA');
+    const comparePriceBEl = document.getElementById('comparePriceB');
+    const compareLastUpdateEl = document.getElementById('compareLastUpdate');
+
+    async function refreshComparisonPrices(showAlert = false) {
+        if (!compareSymbolAInput || !compareSymbolBInput || !comparePriceAEl || !comparePriceBEl) return;
+
+        const symA = compareSymbolAInput.value;
+        const symB = compareSymbolBInput.value;
+
+        try {
+            const response = await fetch('/api/market/compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol_a: symA, symbol_b: symB })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.detail || 'No se pudieron obtener precios reales');
+            }
+
+            const data = await response.json();
+            comparePriceAEl.innerText = `$${Number(data.price_a || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+            comparePriceBEl.innerText = `$${Number(data.price_b || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+            if (compareLastUpdateEl) {
+                const ts = data.timestamp ? new Date(data.timestamp) : new Date();
+                compareLastUpdateEl.innerText = `Última actualización: ${ts.toLocaleTimeString()}`;
+            }
+
+            if (showAlert) {
+                alert(`Análisis comparativo actualizado con precios reales (${data.source || 'market'}).`);
+            }
+        } catch (error) {
+            console.error('Comparison error:', error);
+            if (showAlert) {
+                alert('Error en análisis comparativo: ' + error.message);
+            }
+        }
+    }
+
+    function stopComparisonAutoRefresh() {
+        if (comparisonInterval) {
+            clearInterval(comparisonInterval);
+            comparisonInterval = null;
+        }
+    }
+
+    function startComparisonAutoRefresh() {
+        stopComparisonAutoRefresh();
+        refreshComparisonPrices(false);
+        comparisonInterval = setInterval(() => {
+            refreshComparisonPrices(false);
+        }, 15000);
+    }
+
+    function renderSettingsStatus(checks, saved = false) {
+        if (!settingsStatus || !checks) return;
+        const ready = !!checks.ready_for_real_market;
+        const authOk = !!checks.mainnet_auth_ok;
+        const testnetValue = Number(checks.testnet_account_value || 0);
+        const mainnetValue = Number(checks.mainnet_account_value || 0);
+        const authError = checks.mainnet_auth_error || checks.selected_env_auth_error || '';
+        const title = ready ? '✅ Listo para mercado real' : '⚠️ No listo para mercado real';
+        const savedLine = saved ? 'Configuración guardada correctamente. ' : '';
+
+        settingsStatus.innerHTML = [
+            `<strong>${title}</strong>`,
+            `<div style="margin-top: 6px;">${savedLine}Auth mainnet: ${authOk ? 'OK' : 'ERROR'}</div>`,
+            `<div>Saldo testnet: $${testnetValue.toFixed(2)} | Saldo mainnet: $${mainnetValue.toFixed(2)}</div>`,
+            authError ? `<div style="color: var(--accent-ruby); margin-top: 4px;">${authError}</div>` : ''
+        ].join('');
+    }
+
+    async function loadHyperliquidSettings() {
+        if (!settingsStatus) return;
+        settingsStatus.textContent = 'Estado: cargando configuración...';
+        try {
+            const response = await fetch('/api/settings/hyperliquid');
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudo cargar la configuración');
+            }
+            const data = await response.json();
+            if (settingsWalletAddressInput) {
+                settingsWalletAddressInput.value = data.wallet_address || '';
+                settingsWalletAddressInput.placeholder = data.wallet_masked || '0x...';
+            }
+            if (settingsSigningKeyInput) {
+                settingsSigningKeyInput.value = '';
+                settingsSigningKeyInput.placeholder = data.signing_key_present ? '******** (guardada)' : '0x...';
+            }
+            if (settingsUseTestnetSelect) {
+                settingsUseTestnetSelect.value = data.use_testnet ? 'true' : 'false';
+            }
+            renderSettingsStatus(data.checks, false);
+        } catch (error) {
+            console.error('Error loading Hyperliquid settings:', error);
+            settingsStatus.textContent = 'Error cargando ajustes: ' + error.message;
+        }
+    }
+
+    async function saveHyperliquidSettings() {
+        if (!saveHyperliquidSettingsBtn || !settingsStatus) return;
+
+        const wallet = (settingsWalletAddressInput?.value || '').trim();
+        const signingKey = (settingsSigningKeyInput?.value || '').trim();
+        const useTestnet = (settingsUseTestnetSelect?.value || 'true') === 'true';
+
+        if (!wallet) {
+            alert('Debes informar la wallet de Hyperliquid.');
+            return;
+        }
+        if (!signingKey) {
+            alert('Debes informar la signing key para guardar y validar.');
+            return;
+        }
+
+        saveHyperliquidSettingsBtn.disabled = true;
+        const previousText = saveHyperliquidSettingsBtn.textContent;
+        saveHyperliquidSettingsBtn.textContent = 'GUARDANDO...';
+        settingsStatus.textContent = 'Guardando y validando credenciales...';
+
+        try {
+            const response = await fetch('/api/settings/hyperliquid/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    wallet_address: wallet,
+                    signing_key: signingKey,
+                    use_testnet: useTestnet
+                })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudo guardar configuración');
+            }
+
+            const data = await response.json();
+            if (settingsSigningKeyInput) {
+                settingsSigningKeyInput.value = '';
+                settingsSigningKeyInput.placeholder = '******** (guardada)';
+            }
+            renderSettingsStatus(data.checks, true);
+        } catch (error) {
+            console.error('Error saving Hyperliquid settings:', error);
+            settingsStatus.textContent = 'Error guardando ajustes: ' + error.message;
+            alert('Error guardando ajustes: ' + error.message);
+        } finally {
+            saveHyperliquidSettingsBtn.disabled = false;
+            saveHyperliquidSettingsBtn.textContent = previousText;
+        }
+    }
+
     const runComparisonBtn = document.getElementById('runComparisonBtn');
     if (runComparisonBtn) {
         runComparisonBtn.addEventListener('click', async () => {
-            const symA = document.getElementById('compareSymbolA').value;
-            const symB = document.getElementById('compareSymbolB').value;
-
             runComparisonBtn.innerText = 'ANALYZING...';
             runComparisonBtn.disabled = true;
 
             try {
-                // Fetch live prices from our new market API
-                const [resA, resB] = await Promise.all([
-                    fetch(`/api/market/price/${encodeURIComponent(symA)}`),
-                    fetch(`/api/market/price/${encodeURIComponent(symB)}`)
-                ]);
-
-                if (resA.ok && resB.ok) {
-                    const dataA = await resA.json();
-                    const dataB = await resB.json();
-
-                    document.getElementById('comparePriceA').innerText = `$${(dataA.last || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                    document.getElementById('comparePriceB').innerText = `$${(dataB.last || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-                    // updateAIMarketAnalysis() can be called here to refresh insights
-                } else {
-                    const errA = !resA.ok ? await resA.json().catch(() => ({ detail: 'Error A' })) : null;
-                    const errB = !resB.ok ? await resB.json().catch(() => ({ detail: 'Error B' })) : null;
-                    alert(`Error fetching prices: ${errA?.detail || ''} ${errB?.detail || ''}`);
-                }
-            } catch (error) {
-                console.error('Comparison error:', error);
-                alert('Connection error fetching market data.');
+                await refreshComparisonPrices(true);
             } finally {
                 runComparisonBtn.innerText = 'EXECUTE SIDE-BY-SIDE ANALYSIS';
                 runComparisonBtn.disabled = false;
             }
         });
+    }
+
+    if (compareSymbolAInput) {
+        compareSymbolAInput.addEventListener('change', () => refreshComparisonPrices(false));
+        compareSymbolAInput.addEventListener('blur', () => refreshComparisonPrices(false));
+    }
+    if (compareSymbolBInput) {
+        compareSymbolBInput.addEventListener('change', () => refreshComparisonPrices(false));
+        compareSymbolBInput.addEventListener('blur', () => refreshComparisonPrices(false));
     }
 
     // Launch from Comparison
@@ -213,15 +397,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (window.lucide) lucide.createIcons();
 
+            if (targetId === 'comparison') {
+                startComparisonAutoRefresh();
+            } else {
+                stopComparisonAutoRefresh();
+            }
+
+            if (targetId === 'settings') {
+                loadHyperliquidSettings();
+            }
+
             // Close sidebar on mobile after navigation
             if (sidebar && sidebar.classList.contains('active')) {
                 sidebar.classList.remove('active');
+                if (sidebarOverlay) sidebarOverlay.classList.remove('active');
             }
         });
     });
 
     // Backtesting UI Logic
     const runBtBtn = document.getElementById('runBacktestBtn');
+    const visualizeAssetDataBtn = document.getElementById('visualizeAssetDataBtn');
+    const exportAssetDataBtn = document.getElementById('exportAssetDataBtn');
+    const importAssetDataBtn = document.getElementById('importAssetDataBtn');
+    const assetDataSource = document.getElementById('assetDataSource');
+    const assetDataLimit = document.getElementById('assetDataLimit');
+    const assetDataFormat = document.getElementById('assetDataFormat');
+    const assetDataImportInput = document.getElementById('assetDataImportInput');
+    const assetDataStatus = document.getElementById('assetDataStatus');
     if (runBtBtn) {
         runBtBtn.addEventListener('click', async () => {
             const symbol = document.getElementById('btSymbol').value;
@@ -257,11 +460,185 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    async function fetchAssetCandles() {
+        const symbol = document.getElementById('btSymbol')?.value || 'BTC/USDT';
+        const timeframe = document.getElementById('btTimeframe')?.value || '1h';
+        const source = assetDataSource?.value || 'live';
+        const limit = parseInt(assetDataLimit?.value || '300', 10);
+
+        const response = await fetch('/api/market/data/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol, timeframe, source, limit })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'No se pudieron cargar los datos del activo');
+        }
+
+        return response.json();
+    }
+
+    function renderAssetDataChart(payload) {
+        const canvas = document.getElementById('assetDataChart');
+        if (!canvas || !payload?.candles?.length) return;
+
+        const ctx = canvas.getContext('2d');
+        if (assetDataChart) assetDataChart.destroy();
+
+        const labels = payload.candles.map((c) => new Date(c.time).toLocaleString());
+        const prices = payload.candles.map((c) => c.close);
+
+        assetDataChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: `${payload.symbol} close`,
+                    data: prices,
+                    borderColor: '#38bdf8',
+                    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 0,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { ticks: { color: 'rgba(255,255,255,0.5)', maxRotation: 45, minRotation: 45 } },
+                    y: { ticks: { color: 'rgba(255,255,255,0.5)' } }
+                }
+            }
+        });
+    }
+
+    function downloadTextFile(filename, content, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    if (visualizeAssetDataBtn) {
+        visualizeAssetDataBtn.addEventListener('click', async () => {
+            try {
+                visualizeAssetDataBtn.disabled = true;
+                visualizeAssetDataBtn.textContent = 'CARGANDO...';
+                const payload = await fetchAssetCandles();
+                renderAssetDataChart(payload);
+                if (assetDataStatus) {
+                    assetDataStatus.textContent = `Visualización: ${payload.symbol} ${payload.timeframe} · fuente=${payload.source} · velas=${payload.rows}`;
+                }
+            } catch (error) {
+                console.error('Asset data visualize error:', error);
+                if (assetDataStatus) assetDataStatus.textContent = `Error visualizando datos: ${error.message}`;
+                alert(`Error visualizando datos: ${error.message}`);
+            } finally {
+                visualizeAssetDataBtn.disabled = false;
+                visualizeAssetDataBtn.textContent = 'VISUALIZAR DATOS';
+            }
+        });
+    }
+
+    if (exportAssetDataBtn) {
+        exportAssetDataBtn.addEventListener('click', async () => {
+            const symbol = document.getElementById('btSymbol')?.value || 'BTC/USDT';
+            const timeframe = document.getElementById('btTimeframe')?.value || '1h';
+            const source = assetDataSource?.value || 'live';
+            const limit = parseInt(assetDataLimit?.value || '300', 10);
+            const format = assetDataFormat?.value || 'json';
+
+            try {
+                exportAssetDataBtn.disabled = true;
+                exportAssetDataBtn.textContent = 'EXPORTANDO...';
+                const response = await fetch('/api/market/data/export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, timeframe, source, limit, format })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'No se pudo exportar');
+                }
+
+                const data = await response.json();
+                const mime = data.format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8';
+                downloadTextFile(data.filename, data.content, mime);
+                if (assetDataStatus) assetDataStatus.textContent = `Exportado: ${data.filename} (${data.rows} velas)`;
+            } catch (error) {
+                console.error('Asset data export error:', error);
+                if (assetDataStatus) assetDataStatus.textContent = `Error exportando datos: ${error.message}`;
+                alert(`Error exportando datos: ${error.message}`);
+            } finally {
+                exportAssetDataBtn.disabled = false;
+                exportAssetDataBtn.textContent = 'EXPORTAR DATOS';
+            }
+        });
+    }
+
+    if (importAssetDataBtn) {
+        importAssetDataBtn.addEventListener('click', async () => {
+            const symbol = document.getElementById('btSymbol')?.value || 'BTC/USDT';
+            const timeframe = document.getElementById('btTimeframe')?.value || '1h';
+            const format = assetDataFormat?.value || 'json';
+            const data = assetDataImportInput?.value || '';
+
+            if (!data.trim()) {
+                alert('Pega datos JSON o CSV en el cuadro de importación.');
+                return;
+            }
+
+            try {
+                importAssetDataBtn.disabled = true;
+                importAssetDataBtn.textContent = 'IMPORTANDO...';
+                const response = await fetch('/api/market/data/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, timeframe, format, data })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'No se pudo importar');
+                }
+
+                const result = await response.json();
+                if (assetDataStatus) {
+                    assetDataStatus.textContent = `Importado: ${result.symbol} ${result.timeframe} · ${result.rows} velas`;
+                }
+            } catch (error) {
+                console.error('Asset data import error:', error);
+                if (assetDataStatus) assetDataStatus.textContent = `Error importando datos: ${error.message}`;
+                alert(`Error importando datos: ${error.message}`);
+            } finally {
+                importAssetDataBtn.disabled = false;
+                importAssetDataBtn.textContent = 'IMPORTAR DATOS';
+            }
+        });
+    }
+
     // --- CHART INITIALIZATION ---
     let performanceChart;
     let backtestChart;
+    let assetDataChart;
     let portfolioSparkline;
     let pnlSparkline;
+    const dashboardState = {
+        stats: null,
+        trades: [],
+        positions: []
+    };
 
     function initCharts() {
         const perfCtx = document.getElementById('performanceChart')?.getContext('2d');
@@ -269,10 +646,10 @@ document.addEventListener('DOMContentLoaded', () => {
             performanceChart = new Chart(perfCtx, {
                 type: 'line',
                 data: {
-                    labels: Array.from({ length: 24 }, (_, i) => `${i}:00`),
+                    labels: [],
                     datasets: [{
-                        label: 'Portfolio Value',
-                        data: Array.from({ length: 24 }, () => 2500000 + Math.random() * 50000),
+                        label: 'PnL acumulado (últimas 50 operaciones)',
+                        data: [],
                         borderColor: '#38bdf8',
                         backgroundColor: (context) => {
                             const ctx = context.chart.ctx;
@@ -314,7 +691,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             ticks: {
                                 color: 'rgba(255,255,255,0.4)',
                                 font: { size: 10 },
-                                callback: (val) => '$' + (val / 1000000).toFixed(1) + 'M'
+                                callback: (val) => '$' + Number(val).toLocaleString(undefined, { maximumFractionDigits: 2 })
                             }
                         }
                     }
@@ -335,9 +712,9 @@ document.addEventListener('DOMContentLoaded', () => {
             portfolioSparkline = new Chart(portSparkCtx, {
                 type: 'line',
                 data: {
-                    labels: Array.from({ length: 10 }, (_, i) => i),
+                    labels: [],
                     datasets: [{
-                        data: Array.from({ length: 10 }, () => Math.random() * 100),
+                        data: [],
                         borderColor: '#38bdf8',
                         borderWidth: 1.5,
                         tension: 0.4
@@ -352,9 +729,9 @@ document.addEventListener('DOMContentLoaded', () => {
             pnlSparkline = new Chart(pnlSparkCtx, {
                 type: 'line',
                 data: {
-                    labels: Array.from({ length: 10 }, (_, i) => i),
+                    labels: [],
                     datasets: [{
-                        data: Array.from({ length: 10 }, () => Math.random() * 100),
+                        data: [],
                         borderColor: '#10b981',
                         borderWidth: 1.5,
                         tension: 0.4
@@ -448,8 +825,32 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/bots');
             const bots = await response.json();
 
-            const activeBots = bots.filter(b => !b.is_archived);
+            const activeBots = bots
+                .filter(b => !b.is_archived)
+                .sort((a, b) => {
+                    const aRunning = a.status === 'running' ? 1 : 0;
+                    const bRunning = b.status === 'running' ? 1 : 0;
+                    if (aRunning !== bRunning) return bRunning - aRunning;
+                    return (a.id || '').localeCompare(b.id || '');
+                });
             const archivedBots = bots.filter(b => b.is_archived);
+
+            const botManagerInfo = document.getElementById('botManagerInfo');
+            const vaultManagerInfo = document.getElementById('vaultManagerInfo');
+            if (botManagerInfo) {
+                const runningCount = activeBots.filter(b => b.status === 'running').length;
+                const waitingCount = activeBots.filter(b => b.status !== 'running').length;
+                const activeIds = activeBots
+                    .filter(b => b.status === 'running')
+                    .map(b => b.id)
+                    .slice(0, 3)
+                    .join(', ');
+                const activeTail = activeBots.filter(b => b.status === 'running').length > 3 ? '…' : '';
+                botManagerInfo.textContent = `${activeBots.length} bots · ${runningCount} ACTIVOS · ${waitingCount} EN ESPERA${activeIds ? ` · Activos ahora: ${activeIds}${activeTail}` : ''}`;
+            }
+            if (vaultManagerInfo) {
+                vaultManagerInfo.textContent = `${archivedBots.length} bots archivados en cápsula`;
+            }
 
             updateBotTable(activeBots);
             updateVaultTable(archivedBots);
@@ -470,11 +871,14 @@ document.addEventListener('DOMContentLoaded', () => {
             <tr>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${bot.id}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);"><span class="strategy-badge">${bot.strategy}</span></td>
-                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">$${bot.config?.allocation || bot.capital_allocation || 0}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">$${bot.config?.capital_allocation || bot.config?.allocation || bot.capital_allocation || 0}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${bot.status}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: right;">
                     <button class="glass restore-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-emerald); cursor: pointer; border: none;" title="Restore">
                         <i data-lucide="refresh-cw" style="width: 16px; height: 16px;"></i>
+                    </button>
+                    <button class="glass restore-start-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-blue); cursor: pointer; border: none;" title="Restore + Start">
+                        <i data-lucide="play-circle" style="width: 16px; height: 16px;"></i>
                     </button>
                     <button class="glass delete-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-ruby); cursor: pointer; border: none;" title="Permanently Delete">
                         <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
@@ -490,25 +894,38 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!botTableBody) return;
 
         if (!Array.isArray(bots) || bots.length === 0) {
-            botTableBody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">No bots active. Create one to start trading.</td></tr>';
+            botTableBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay bots en Mis Bots (activos o en espera).</td></tr>';
             return;
         }
 
-        botTableBody.innerHTML = bots.map(bot => `
-            <tr class="bot-row" data-id="${bot.id}">
+        botTableBody.innerHTML = bots.map(bot => {
+            const botTrades = dashboardState.trades.filter((trade) => trade.bot_id === bot.id);
+            const botRealizedPnl = botTrades.reduce((acc, trade) => acc + (Number(trade.pnl) || 0), 0);
+            const pnlColor = botRealizedPnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            const pnlPrefix = botRealizedPnl >= 0 ? '+' : '';
+
+            const scoredTrades = botTrades.filter((trade) => Number(trade.pnl) !== 0);
+            const winningTrades = scoredTrades.filter((trade) => Number(trade.pnl) > 0).length;
+            const successRate = scoredTrades.length > 0
+                ? `${((winningTrades / scoredTrades.length) * 100).toFixed(1)}%`
+                : 'N/D';
+
+            const uptimeText = bot.status === 'running' ? 'En ejecución' : 'Detenido';
+
+            return `
+            <tr class="bot-row ${bot.status === 'running' ? 'bot-running' : 'bot-waiting'}" data-id="${bot.id}">
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${bot.id}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); font-weight: 500;">${bot.id.split('_')[0].toUpperCase()}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);"><span class="strategy-badge">${bot.strategy}</span></td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                        <div style="width: 8px; height: 8px; border-radius: 50%; background: ${bot.status === 'running' ? 'var(--accent-emerald)' : 'var(--accent-ruby)'};"></div>
-                        ${bot.status}
-                    </div>
+                    <span class="status-pill ${bot.status === 'running' ? 'status-pill-active' : 'status-pill-waiting'}">
+                        ${bot.status === 'running' ? 'ACTIVO' : 'EN ESPERA'}
+                    </span>
                 </td>
-                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">$${bot.config?.allocation || 0}</td>
-                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); color: var(--accent-emerald); font-weight: 600;">+$0.00</td>
-                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">99.9%</td>
-                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">68%</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">$${bot.config?.capital_allocation || bot.config?.allocation || bot.capital_allocation || 0}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); color: ${pnlColor}; font-weight: 600;">${pnlPrefix}$${botRealizedPnl.toFixed(3)}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${uptimeText}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${successRate}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: right;">
                     <button class="glass bot-action" data-id="${bot.id}" data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="padding: 5px; color: ${bot.status === 'running' ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; cursor: pointer; border: none;" title="${bot.status === 'running' ? 'Stop Bot' : 'Start Bot'}">
                         <i data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="width: 16px; height: 16px;"></i>
@@ -524,7 +941,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     </button>
                 </td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
 
         updateTableVisibility();
         if (window.lucide) lucide.createIcons();
@@ -534,8 +952,30 @@ document.addEventListener('DOMContentLoaded', () => {
             row.addEventListener('mouseenter', (e) => {
                 const botId = row.dataset.id;
                 const bot = bots.find(b => b.id === botId);
-                const mockData = Array.from({ length: 20 }, () => Math.random() * 50 + 100);
-                showPreview(e, `Bot Performance: ${botId}`, mockData, `Efficiency: 94% | Uptime: 99.9%`, bot);
+                const botTrades = dashboardState.trades
+                    .filter((trade) => trade.bot_id === botId)
+                    .sort((a, b) => new Date(a.time) - new Date(b.time));
+
+                let cumulative = 0;
+                const previewData = botTrades.map((trade) => {
+                    cumulative += Number(trade.pnl) || 0;
+                    return cumulative;
+                });
+
+                const scoredTrades = botTrades.filter((trade) => Number(trade.pnl) !== 0);
+                const wins = scoredTrades.filter((trade) => Number(trade.pnl) > 0).length;
+                const successRate = scoredTrades.length > 0
+                    ? ((wins / scoredTrades.length) * 100).toFixed(1)
+                    : 'N/D';
+
+                const stats = `Trades visibles: ${botTrades.length} | Éxito: ${successRate === 'N/D' ? 'N/D' : `${successRate}%`}`;
+                showPreview(
+                    e,
+                    `Bot Performance: ${botId}`,
+                    previewData.length >= 2 ? previewData : [0, 0],
+                    stats,
+                    bot
+                );
             });
             row.addEventListener('mouseleave', (e) => {
                 // Only hide if NOT moving into the preview popup
@@ -602,7 +1042,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/trades');
             const trades = await response.json();
 
+            dashboardState.trades = Array.isArray(trades) ? trades : [];
             updateTradeFeed(trades);
+            refreshDerivedVisuals();
         } catch (error) {
             console.error('Error fetching trades:', error);
         }
@@ -700,6 +1142,199 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderPresetQuickDoc(preset) {
+        if (!presetQuickDoc) return;
+        if (!preset) {
+            presetQuickDoc.innerHTML = 'Selecciona un preset para cargar estrategia, símbolo y parámetros base.';
+            return;
+        }
+
+        presetQuickDoc.innerHTML = `
+            <strong>${preset.name}</strong><br>
+            ${preset.description}<br>
+            Estrategia: <strong>${preset.strategy}</strong> · Riesgo: <strong>${preset.risk_level}</strong> · Mercado: <strong>${preset.market_type}</strong>
+        `;
+    }
+
+    function applyPresetToCreateForm(preset) {
+        if (!preset || !preset.config) return;
+
+        const config = preset.config;
+        const strategySelect = document.getElementById('newBotStrategy');
+        const executorSelect = document.getElementById('newBotExecutor');
+        const symbolInput = document.getElementById('newBotSymbol');
+        const fastEmaInput = document.getElementById('newBotFastEma');
+        const slowEmaInput = document.getElementById('newBotSlowEma');
+        const upperInput = document.getElementById('newBotUpperLimit');
+        const lowerInput = document.getElementById('newBotLowerLimit');
+        const gridsInput = document.getElementById('newBotNumGrids');
+        const allocationInput = document.getElementById('newBotAllocation');
+
+        if (strategySelect && config.strategy) strategySelect.value = config.strategy;
+        if (executorSelect && config.executor) executorSelect.value = config.executor;
+        if (symbolInput && config.symbol) symbolInput.value = config.symbol;
+        if (fastEmaInput && Number.isFinite(config.fast_ema)) fastEmaInput.value = config.fast_ema;
+        if (slowEmaInput && Number.isFinite(config.slow_ema)) slowEmaInput.value = config.slow_ema;
+        if (upperInput && Number.isFinite(config.upper_limit)) upperInput.value = config.upper_limit;
+        if (lowerInput && Number.isFinite(config.lower_limit)) lowerInput.value = config.lower_limit;
+        if (gridsInput && Number.isFinite(config.num_grids)) gridsInput.value = config.num_grids;
+        if (allocationInput && Number.isFinite(config.capital_allocation)) allocationInput.value = config.capital_allocation;
+
+        document.dispatchEvent(new Event('change', { bubbles: true }));
+
+        if (strategySelect) {
+            strategySelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (executorSelect) {
+            executorSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    function applyConfigToCreateForm(config) {
+        if (!config) return;
+        const strategySelect = document.getElementById('newBotStrategy');
+        const executorSelect = document.getElementById('newBotExecutor');
+        const symbolInput = document.getElementById('newBotSymbol');
+        const fastEmaInput = document.getElementById('newBotFastEma');
+        const slowEmaInput = document.getElementById('newBotSlowEma');
+        const upperInput = document.getElementById('newBotUpperLimit');
+        const lowerInput = document.getElementById('newBotLowerLimit');
+        const gridsInput = document.getElementById('newBotNumGrids');
+        const allocationInput = document.getElementById('newBotAllocation');
+
+        if (strategySelect && config.strategy) strategySelect.value = config.strategy;
+        if (executorSelect && config.executor) executorSelect.value = config.executor;
+        if (symbolInput && config.symbol) symbolInput.value = config.symbol;
+        if (fastEmaInput && Number.isFinite(config.fast_ema)) fastEmaInput.value = config.fast_ema;
+        if (slowEmaInput && Number.isFinite(config.slow_ema)) slowEmaInput.value = config.slow_ema;
+        if (upperInput && Number.isFinite(config.upper_limit)) upperInput.value = config.upper_limit;
+        if (lowerInput && Number.isFinite(config.lower_limit)) lowerInput.value = config.lower_limit;
+        if (gridsInput && Number.isFinite(config.num_grids)) gridsInput.value = config.num_grids;
+        if (allocationInput && Number.isFinite(config.capital_allocation)) allocationInput.value = config.capital_allocation;
+
+        if (strategySelect) strategySelect.dispatchEvent(new Event('change', { bubbles: true }));
+        if (executorSelect) executorSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function renderAdvisorResults(data) {
+        if (!advisorResults) return;
+        const recommendations = data?.recommendations || [];
+        const marketContext = data?.market_context || {};
+        advisorMap = {};
+
+        if (!recommendations.length) {
+            advisorResults.style.display = 'block';
+            advisorResults.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
+            return;
+        }
+
+        recommendations.forEach((item) => {
+            advisorMap[item.horizon] = item;
+        });
+
+        advisorResults.style.display = 'block';
+        const marketSummary = `
+            <div style="margin-bottom:8px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.02);">
+                <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">Contexto de mercado</div>
+                <div style="font-size:0.8rem; color:var(--text-secondary); margin-top:4px;">
+                    Régimen: <strong style="color:var(--accent-blue);">${marketContext.regime || 'mixto'}</strong> ·
+                    Volatilidad: <strong>${marketContext.volatility_pct ?? 0}%</strong> ·
+                    Tendencia: <strong>${marketContext.trend_pct ?? 0}%</strong> ·
+                    Horizonte sugerido: <strong style="color:var(--accent-emerald);">${(marketContext.preferred_horizon || 'medio').toUpperCase()}</strong>
+                </div>
+            </div>
+        `;
+
+        advisorResults.innerHTML = marketSummary + recommendations.map((item) => {
+            const actionLabel = item.recommended_action === 'tune_existing'
+                ? `Editar y usar ${item.recommended_bot_id || 'bot existente'}`
+                : item.recommended_action === 'reduce_risk'
+                    ? `Reducir riesgo en ${item.recommended_bot_id || 'bot existente'} (prioridad defensiva)`
+                    : `Crear bot nuevo (${item.new_bot_preset_name || 'preset'})`;
+
+            return `
+                <div style="border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.02);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <strong style="text-transform:uppercase; color:var(--accent-blue);">${item.horizon}</strong>
+                        <span style="font-size:0.72rem; color:var(--text-secondary);">Confianza ${item.confidence}%</span>
+                    </div>
+                    <div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:6px;">${actionLabel}</div>
+                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:8px;">${item.reason || ''}</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px;">
+                        <button class="advisor-apply-btn" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-blue); color:var(--accent-blue); background:transparent; border-radius:8px; cursor:pointer;">Usar en formulario</button>
+                        <button class="advisor-create-btn" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-emerald); color:var(--accent-emerald); background:transparent; border-radius:8px; cursor:pointer;">Crear bot ahora</button>
+                        <button class="advisor-auto-btn" data-horizon="${item.horizon}" style="padding:7px; border:1px solid #facc15; color:#facc15; background:transparent; border-radius:8px; cursor:pointer;">Auto-ejecutar</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function loadBotPresets() {
+        if (!newBotPreset) return;
+
+        try {
+            const response = await fetch('/api/bot-presets');
+            if (!response.ok) return;
+
+            const data = await response.json();
+            botPresets = data.presets || [];
+
+            botPresets.forEach((preset) => {
+                const opt = document.createElement('option');
+                opt.value = preset.id;
+                opt.textContent = `${preset.name} (${preset.risk_level})`;
+                newBotPreset.appendChild(opt);
+            });
+        } catch (error) {
+            console.error('Error loading bot presets:', error);
+        }
+    }
+
+    async function fetchProductionAlerts() {
+        if (!productionAlertsContent) return;
+
+        try {
+            const response = await fetch('/api/production/alerts?limit=12&only_open=true');
+            if (!response.ok) return;
+
+            const alerts = await response.json();
+            if (!Array.isArray(alerts) || alerts.length === 0) {
+                productionAlertsContent.innerHTML = '<div style="color: var(--text-muted);">Sin alertas críticas abiertas. Producción estable.</div>';
+                return;
+            }
+
+            productionAlertsContent.innerHTML = alerts.map((alert) => {
+                const levelColor = alert.level === 'critical'
+                    ? 'var(--accent-ruby)'
+                    : alert.level === 'warning'
+                        ? '#facc15'
+                        : 'var(--accent-blue)';
+
+                const createdAt = alert.created_at ? new Date(alert.created_at).toLocaleString() : '-';
+                const details = alert.data || {};
+                return `
+                    <div style="border:1px solid rgba(255,255,255,0.08); border-left:4px solid ${levelColor}; border-radius:10px; padding:10px; margin-bottom:10px; background:rgba(255,255,255,0.02);">
+                        <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+                            <div style="font-weight:700; color:${levelColor}; text-transform:uppercase; font-size:0.72rem;">${alert.level}</div>
+                            <div style="font-size:0.68rem; color:var(--text-muted);">${createdAt}</div>
+                        </div>
+                        <div style="font-size:0.86rem; font-weight:600; margin-top:4px;">${alert.title || 'Alerta de producción'}</div>
+                        <div style="font-size:0.78rem; color:var(--text-secondary); margin-top:3px;">Bot: <strong>${alert.bot_id}</strong> · ${alert.message}</div>
+                        <div style="font-size:0.72rem; color:var(--text-muted); margin-top:6px;">
+                            WinRate: ${details.win_rate ?? '-'}% · NetPnL: ${details.net_pnl ?? '-'} · Losses consecutivas: ${details.consecutive_losses ?? '-'}
+                        </div>
+                        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+                            <button class="ack-production-alert" data-id="${alert.id}" style="padding:6px 10px; border:1px solid var(--accent-blue); color:var(--accent-blue); background:transparent; border-radius:8px; cursor:pointer; font-size:0.72rem;">MARCAR REVISADA</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } catch (error) {
+            console.error('Error fetching production alerts:', error);
+        }
+    }
+
 
     // --- DELEGATED BOT MODAL LOGIC ---
 
@@ -710,6 +1345,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const createBtn = e.target.closest('#createBotBtn');
         const closeBtn = e.target.closest('[data-action="close-modal"]') || e.target.closest('#closeModal');
         const confirmBtn = e.target.closest('#confirmCreateBot');
+        const saveVaultBtn = e.target.closest('#confirmSaveVaultBot');
+        const analyzeBtn = e.target.closest('#analyzeBotBtn');
+        const advisorApplyBtn = e.target.closest('.advisor-apply-btn');
+        const advisorCreateBtn = e.target.closest('.advisor-create-btn');
+        const advisorAutoBtn = e.target.closest('.advisor-auto-btn');
+        const ackProductionAlert = e.target.closest('.ack-production-alert');
 
         if (createBtn) {
             const modal = document.getElementById('createBotModal');
@@ -727,10 +1368,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (confirmBtn) {
             const executor = document.getElementById('newBotExecutor')?.value || 'paper';
+            const presetId = document.getElementById('newBotPreset')?.value || '';
+            const strategy = document.getElementById('newBotStrategy')?.value || 'ema_cross';
             const botConfig = {
                 id: document.getElementById('newBotId')?.value,
                 symbol: document.getElementById('newBotSymbol')?.value,
-                strategy: document.getElementById('newBotStrategy')?.value,
+                strategy: strategy,
                 fast_ema: parseInt(document.getElementById('newBotFastEma')?.value || 9),
                 slow_ema: parseInt(document.getElementById('newBotSlowEma')?.value || 21),
                 upper_limit: parseFloat(document.getElementById('newBotUpperLimit')?.value || 70000),
@@ -741,17 +1384,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 risk_config: { max_drawdown: 0.05 }
             };
 
+            if (strategy === 'paired_balanced') {
+                botConfig.allow_short = true;
+                botConfig.pair_symbol_a = botConfig.symbol;
+                botConfig.pair_symbol_b = document.getElementById('newBotPairSymbolB')?.value || 'ETH/USDT';
+                botConfig.pair_entry_z = parseFloat(document.getElementById('newBotPairEntryZ')?.value || 1.4);
+                botConfig.pair_exit_z = parseFloat(document.getElementById('newBotPairExitZ')?.value || 0.25);
+                botConfig.pair_stop_loss_pct = parseFloat(document.getElementById('newBotPairStopLossPct')?.value || 0.015);
+                botConfig.pair_take_profit_pct = parseFloat(document.getElementById('newBotPairTakeProfitPct')?.value || 0.01);
+                botConfig.pair_profit_lock_pct = parseFloat(document.getElementById('newBotPairProfitLockPct')?.value || 0.004);
+                botConfig.pair_min_correlation = parseFloat(document.getElementById('newBotPairMinCorr')?.value || 0.35);
+                botConfig.pair_lookback = 120;
+                botConfig.pair_min_hold_sec = 90;
+                botConfig.pair_rebalance_sec = 30;
+            }
+
             if (executor === 'hyperliquid') {
                 const ok = confirm(`⚠️ ADVERTENCIA: Este bot usará FONDOS REALES en Hyperliquid Mainnet.\n\nPar: ${botConfig.symbol}\nEstrategia: ${botConfig.strategy}\n\n¿Confirmas el lanzamiento?`);
                 if (!ok) return;
             }
 
             try {
-                const response = await fetch('/api/bots', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(botConfig)
-                });
+                let response;
+
+                if (presetId) {
+                    response = await fetch(`/api/bot-presets/${presetId}/create`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: botConfig.id,
+                            overrides: {
+                                symbol: botConfig.symbol,
+                                executor: botConfig.executor,
+                                fast_ema: botConfig.fast_ema,
+                                slow_ema: botConfig.slow_ema,
+                                upper_limit: botConfig.upper_limit,
+                                lower_limit: botConfig.lower_limit,
+                                num_grids: botConfig.num_grids,
+                                capital_allocation: botConfig.capital_allocation,
+                            }
+                        })
+                    });
+                } else {
+                    response = await fetch('/api/bots', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(botConfig)
+                    });
+                }
 
                 if (response.ok) {
                     const modal = document.getElementById('createBotModal');
@@ -765,7 +1445,229 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Network error creating bot:', error);
             }
         }
+
+        if (saveVaultBtn) {
+            const presetId = document.getElementById('newBotPreset')?.value || '';
+            if (!presetId) {
+                alert('Selecciona primero un preset para guardar en Cápsula.');
+                return;
+            }
+
+            const strategy = document.getElementById('newBotStrategy')?.value || 'ema_cross';
+            const botConfig = {
+                id: document.getElementById('newBotId')?.value,
+                symbol: document.getElementById('newBotSymbol')?.value,
+                strategy: strategy,
+                fast_ema: parseInt(document.getElementById('newBotFastEma')?.value || 9),
+                slow_ema: parseInt(document.getElementById('newBotSlowEma')?.value || 21),
+                upper_limit: parseFloat(document.getElementById('newBotUpperLimit')?.value || 70000),
+                lower_limit: parseFloat(document.getElementById('newBotLowerLimit')?.value || 60000),
+                num_grids: parseInt(document.getElementById('newBotNumGrids')?.value || 10),
+                capital_allocation: parseFloat(document.getElementById('newBotAllocation')?.value || 0),
+                executor: document.getElementById('newBotExecutor')?.value || 'paper',
+            };
+
+            if (strategy === 'paired_balanced') {
+                botConfig.allow_short = true;
+                botConfig.pair_symbol_a = botConfig.symbol;
+                botConfig.pair_symbol_b = document.getElementById('newBotPairSymbolB')?.value || 'ETH/USDT';
+                botConfig.pair_entry_z = parseFloat(document.getElementById('newBotPairEntryZ')?.value || 1.4);
+                botConfig.pair_exit_z = parseFloat(document.getElementById('newBotPairExitZ')?.value || 0.25);
+                botConfig.pair_stop_loss_pct = parseFloat(document.getElementById('newBotPairStopLossPct')?.value || 0.015);
+                botConfig.pair_take_profit_pct = parseFloat(document.getElementById('newBotPairTakeProfitPct')?.value || 0.01);
+                botConfig.pair_profit_lock_pct = parseFloat(document.getElementById('newBotPairProfitLockPct')?.value || 0.004);
+                botConfig.pair_min_correlation = parseFloat(document.getElementById('newBotPairMinCorr')?.value || 0.35);
+                botConfig.pair_lookback = 120;
+                botConfig.pair_min_hold_sec = 90;
+                botConfig.pair_rebalance_sec = 30;
+            }
+
+            try {
+                const response = await fetch(`/api/bot-presets/${presetId}/save`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: botConfig.id,
+                        overrides: {
+                            symbol: botConfig.symbol,
+                            executor: botConfig.executor,
+                            fast_ema: botConfig.fast_ema,
+                            slow_ema: botConfig.slow_ema,
+                            upper_limit: botConfig.upper_limit,
+                            lower_limit: botConfig.lower_limit,
+                            num_grids: botConfig.num_grids,
+                            capital_allocation: botConfig.capital_allocation,
+                        }
+                    })
+                });
+
+                if (response.ok) {
+                    const modal = document.getElementById('createBotModal');
+                    if (modal) modal.style.display = 'none';
+                    fetchBots();
+                } else {
+                    const error = await response.json();
+                    alert('Error guardando en cápsula: ' + (error.detail || 'Error desconocido'));
+                }
+            } catch (error) {
+                console.error('Network error saving bot to vault:', error);
+            }
+        }
+
+        if (analyzeBtn) {
+            const symbol = document.getElementById('newBotSymbol')?.value || 'BTC/USDT';
+            const allocation = parseFloat(document.getElementById('newBotAllocation')?.value || 500);
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = 'ANALIZANDO...';
+
+            try {
+                const response = await fetch('/api/bot-advisor/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, allocation })
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('Error de análisis: ' + (err.detail || 'Error desconocido'));
+                } else {
+                    const data = await response.json();
+                    renderAdvisorResults(data);
+                }
+            } catch (error) {
+                console.error('Advisor analyze error:', error);
+                alert('No se pudo completar el análisis en este momento.');
+            } finally {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'ANALIZAR Y RECOMENDAR (CORTO/MEDIO/LARGO)';
+            }
+        }
+
+        if (advisorApplyBtn) {
+            const horizon = advisorApplyBtn.dataset.horizon;
+            const rec = advisorMap[horizon];
+            if (!rec) return;
+            const useExistingConfig = rec.recommended_action === 'tune_existing' || rec.recommended_action === 'reduce_risk';
+            const configToApply = useExistingConfig ? rec.edited_config : rec.new_bot_config;
+            applyConfigToCreateForm(configToApply);
+        }
+
+        if (advisorCreateBtn) {
+            const horizon = advisorCreateBtn.dataset.horizon;
+            const rec = advisorMap[horizon];
+            if (!rec) return;
+
+            const useExistingConfig = rec.recommended_action === 'tune_existing' || rec.recommended_action === 'reduce_risk';
+            const configToCreate = useExistingConfig ? rec.edited_config : rec.new_bot_config;
+            if (!configToCreate) return;
+
+            if (useExistingConfig && rec.recommended_bot_id) {
+                try {
+                    const response = await fetch(`/api/bots/${rec.recommended_bot_id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(configToCreate)
+                    });
+                    if (!response.ok) {
+                        const err = await response.json();
+                        alert('No se pudo actualizar el bot recomendado: ' + (err.detail || 'Error desconocido'));
+                    } else {
+                        fetchBots();
+                        alert(`Bot actualizado: ${rec.recommended_bot_id}`);
+                    }
+                } catch (error) {
+                    console.error('Advisor update bot error:', error);
+                }
+                return;
+            }
+
+            const baseId = document.getElementById('newBotId')?.value?.trim() || `Bot-${horizon}`;
+            const uniqueId = `${baseId}-${Math.floor(Math.random() * 10000)}`;
+
+            const payload = {
+                ...configToCreate,
+                id: uniqueId
+            };
+
+            try {
+                const response = await fetch('/api/bots', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('No se pudo crear el bot: ' + (err.detail || 'Error desconocido'));
+                } else {
+                    fetchBots();
+                    alert(`Bot creado: ${uniqueId}`);
+                }
+            } catch (error) {
+                console.error('Advisor create bot error:', error);
+            }
+        }
+
+        if (advisorAutoBtn) {
+            const horizon = advisorAutoBtn.dataset.horizon;
+            const symbol = document.getElementById('newBotSymbol')?.value || 'BTC/USDT';
+            const allocation = parseFloat(document.getElementById('newBotAllocation')?.value || 500);
+
+            advisorAutoBtn.disabled = true;
+            const prevText = advisorAutoBtn.textContent;
+            advisorAutoBtn.textContent = 'EJECUTANDO...';
+
+            try {
+                const response = await fetch('/api/bot-advisor/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ horizon, symbol, allocation })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('No se pudo auto-ejecutar: ' + (err.detail || 'Error desconocido'));
+                } else {
+                    const data = await response.json();
+                    fetchBots();
+                    alert(data.message || 'Auto-ejecución completada');
+                }
+            } catch (error) {
+                console.error('Advisor auto execute error:', error);
+                alert('Error de red al auto-ejecutar recomendación.');
+            } finally {
+                advisorAutoBtn.disabled = false;
+                advisorAutoBtn.textContent = prevText;
+            }
+        }
+
+        if (ackProductionAlert) {
+            const alertId = ackProductionAlert.dataset.id;
+            if (!alertId) return;
+            try {
+                const response = await fetch(`/api/production/alerts/${alertId}/ack`, { method: 'POST' });
+                if (response.ok) {
+                    fetchProductionAlerts();
+                }
+            } catch (error) {
+                console.error('Error acknowledging production alert:', error);
+            }
+        }
     });
+
+    if (refreshProductionAlerts) {
+        refreshProductionAlerts.addEventListener('click', async () => {
+            try {
+                await fetch('/api/production/scan', { method: 'POST' });
+            } catch (error) {
+                console.error('Error triggering production scan:', error);
+            } finally {
+                fetchProductionAlerts();
+            }
+        });
+    }
+
+    if (saveHyperliquidSettingsBtn) {
+        saveHyperliquidSettingsBtn.addEventListener('click', saveHyperliquidSettings);
+    }
 
     // Delegated Change listener for Executor dropdown
     document.addEventListener('change', (e) => {
@@ -788,18 +1690,35 @@ document.addEventListener('DOMContentLoaded', () => {
             const strategy = e.target.value;
             const emaParams = document.getElementById('emaParams');
             const gridParams = document.getElementById('gridParams');
+            const pairParams = document.getElementById('pairParams');
 
-            if (emaParams && gridParams) {
+            if (emaParams && gridParams && pairParams) {
                 if (strategy === 'grid_trading') {
                     emaParams.style.display = 'none';
                     gridParams.style.display = 'block';
+                    pairParams.style.display = 'none';
                 } else if (strategy === 'ema_cross') {
                     emaParams.style.display = 'block';
                     gridParams.style.display = 'none';
+                    pairParams.style.display = 'none';
+                } else if (strategy === 'paired_balanced') {
+                    emaParams.style.display = 'none';
+                    gridParams.style.display = 'none';
+                    pairParams.style.display = 'block';
                 } else {
                     emaParams.style.display = 'none';
                     gridParams.style.display = 'none';
+                    pairParams.style.display = 'none';
                 }
+            }
+        }
+
+        if (e.target.id === 'newBotPreset') {
+            const presetId = e.target.value;
+            const selectedPreset = botPresets.find((preset) => preset.id === presetId);
+            renderPresetQuickDoc(selectedPreset || null);
+            if (selectedPreset) {
+                applyPresetToCreateForm(selectedPreset);
             }
         }
     });
@@ -811,9 +1730,11 @@ document.addEventListener('DOMContentLoaded', () => {
         e.stopPropagation();
 
         const actionIcon = e.target.closest('.bot-action');
+        const editIcon = e.target.closest('.edit-bot-btn');
         const deleteIcon = e.target.closest('.delete-bot-btn');
         const archiveIcon = e.target.closest('.archive-bot-btn');
         const restoreIcon = e.target.closest('.restore-bot-btn');
+        const restoreStartIcon = e.target.closest('.restore-start-bot-btn');
 
         if (actionIcon) {
             const botId = actionIcon.dataset.id;
@@ -835,6 +1756,29 @@ document.addEventListener('DOMContentLoaded', () => {
             } finally {
                 actionIcon.style.opacity = '1';
                 actionIcon.disabled = false;
+            }
+        }
+
+        if (editIcon) {
+            const botId = editIcon.dataset.id;
+            try {
+                const response = await fetch('/api/bots');
+                if (!response.ok) {
+                    throw new Error('No se pudo cargar la lista de bots');
+                }
+
+                const bots = await response.json();
+                const bot = bots.find((item) => item.id === botId);
+
+                if (!bot) {
+                    alert(`No se encontró el bot ${botId}`);
+                    return;
+                }
+
+                showEditBotModal(bot);
+            } catch (error) {
+                console.error('Edit bot error:', error);
+                alert('Error al abrir la edición del bot.');
             }
         }
 
@@ -868,6 +1812,29 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        if (restoreStartIcon) {
+            const botId = restoreStartIcon.dataset.id;
+            try {
+                const restoreResponse = await fetch(`/api/bots/${botId}/restore`, { method: 'POST' });
+                if (!restoreResponse.ok) {
+                    const err = await restoreResponse.json();
+                    alert('Restore failed: ' + (err.detail || 'Unknown error'));
+                    return;
+                }
+
+                const startResponse = await fetch(`/api/bots/${botId}/start`, { method: 'POST' });
+                if (!startResponse.ok) {
+                    const err = await startResponse.json();
+                    alert('Start failed: ' + (err.detail || 'Unknown error'));
+                    return;
+                }
+
+                fetchBots();
+            } catch (error) {
+                console.error('Restore + start bot error:', error);
+            }
+        }
+
         if (deleteIcon) {
             const botId = deleteIcon.dataset.id;
             showCustomConfirm(
@@ -897,6 +1864,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/stats');
             const s = await res.json();
+            dashboardState.stats = s;
 
             const pnlEl = document.getElementById('statTotalPnl');
             const feesEl = document.getElementById('statTotalFees');
@@ -906,10 +1874,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const openOrdEl = document.getElementById('statOpenOrders');
             const winLossEl = document.getElementById('statWinLoss');
             const volEl = document.getElementById('statTotalVolume');
+            const netPnl = (typeof s.net_pnl === 'number') ? s.net_pnl : (s.total_pnl - s.total_fees);
 
             if (pnlEl) {
-                pnlEl.textContent = `${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl.toFixed(2)}`;
-                pnlEl.style.color = s.total_pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+                pnlEl.textContent = `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`;
+                pnlEl.style.color = netPnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
             }
             if (feesEl) feesEl.textContent = `$${s.total_fees.toFixed(4)}`;
             if (winRateEl) winRateEl.textContent = `${s.win_rate}%`;
@@ -918,6 +1887,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (openOrdEl) openOrdEl.textContent = `Órdenes en log: ${s.open_orders + s.total_trades}`;
             if (winLossEl) winLossEl.textContent = `${s.wins} wins / ${s.losses} losses`;
             if (volEl) volEl.textContent = `Volumen: $${(s.total_volume).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+            refreshDerivedVisuals();
         } catch (e) {
             console.error('fetchStats error:', e);
         }
@@ -928,6 +1899,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/positions');
             const positions = await res.json();
+            dashboardState.positions = Array.isArray(positions) ? positions : [];
 
             const tbody = document.getElementById('openPositionsTableBody');
             const badge = document.getElementById('openPositionsBadge');
@@ -962,6 +1934,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                 </tr>`;
             }).join('');
+
+            refreshDerivedVisuals();
         } catch (e) {
             console.error('fetchPositions error:', e);
         }
@@ -1124,50 +2098,106 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- PERIODIC UPDATES & REAL-TIME SIMULATION ---
 
+    function getModelConfidence(stats, trades) {
+        if (!stats) return 0;
+
+        const winRate = Number(stats.win_rate) || 0;
+        const totalTrades = Number(stats.total_trades) || 0;
+        const sampleFactor = Math.min(totalTrades / 100, 1);
+        const activityFactor = Math.min((trades?.length || 0) / 50, 1);
+
+        const confidence = (winRate * 0.7) + (sampleFactor * 100 * 0.2) + (activityFactor * 100 * 0.1);
+        return Math.max(0, Math.min(100, Math.round(confidence)));
+    }
+
+    function updateModelConfidenceUI(value) {
+        const confidenceBar = document.getElementById('aiModelConfidenceBar');
+        const confidenceValue = document.getElementById('aiModelConfidenceValue');
+
+        if (confidenceBar) confidenceBar.style.width = `${value}%`;
+        if (confidenceValue) confidenceValue.textContent = `${value}%`;
+    }
+
+    function updatePerformanceCharts() {
+        const sortedTrades = [...(dashboardState.trades || [])]
+            .sort((a, b) => new Date(a.time) - new Date(b.time));
+
+        let cumulativePnl = 0;
+        const pnlSeries = sortedTrades.map((trade) => {
+            cumulativePnl += Number(trade.pnl) || 0;
+            return cumulativePnl;
+        });
+        const pnlLabels = sortedTrades.map((trade) => new Date(trade.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+        if (performanceChart) {
+            performanceChart.data.labels = pnlLabels;
+            performanceChart.data.datasets[0].data = pnlSeries;
+            performanceChart.update('none');
+        }
+
+        const cumulativeNotionalSeries = sortedTrades.reduce((acc, trade, idx) => {
+            const prev = idx > 0 ? acc[idx - 1] : 0;
+            const notional = (Number(trade.price) || 0) * (Number(trade.amount) || 0);
+            acc.push(prev + notional);
+            return acc;
+        }, []);
+
+        if (portfolioSparkline) {
+            portfolioSparkline.data.labels = cumulativeNotionalSeries.map((_, idx) => idx + 1);
+            portfolioSparkline.data.datasets[0].data = cumulativeNotionalSeries;
+            portfolioSparkline.update('none');
+        }
+
+        if (pnlSparkline) {
+            pnlSparkline.data.labels = pnlSeries.map((_, idx) => idx + 1);
+            pnlSparkline.data.datasets[0].data = pnlSeries;
+            pnlSparkline.update('none');
+        }
+    }
+
+    function buildAIMarketSummary() {
+        const stats = dashboardState.stats;
+        const positions = dashboardState.positions || [];
+        const trades = dashboardState.trades || [];
+
+        if (!stats) {
+            return 'Sin métricas disponibles todavía. Esperando datos reales del backend.';
+        }
+
+        const netPnl = typeof stats.net_pnl === 'number' ? stats.net_pnl : ((stats.total_pnl || 0) - (stats.total_fees || 0));
+        const latestTrade = trades.length > 0 ? trades[0] : null;
+        const latestTradeText = latestTrade
+            ? `Última ejecución: ${latestTrade.side?.toUpperCase()} ${latestTrade.symbol} por ${latestTrade.bot_id}.`
+            : 'Sin ejecuciones recientes en el log visible.';
+
+        return `Rendimiento real: ${stats.total_trades || 0} operaciones, win rate ${stats.win_rate || 0}%, PnL neto ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} y ${positions.length} posiciones abiertas. ${latestTradeText}`;
+    }
+
     async function updateAIMarketAnalysis() {
         const aiSummary = document.getElementById('aiMarketSummary');
         if (!aiSummary) return;
 
         try {
-            const analyses = [
-                "Market sentiment is currently bullish on BTC/USDT. Bots are optimizing for long positions.",
-                "Volatility is increasing in the 1h timeframe. Risk limits have been adjusted automatically.",
-                "Local LLM suggests a potential reversal at $68,500. Monitoring RSI levels across all active bots.",
-                "Execution efficiency is up 4.2% this hour. Smart routing is active on 8 bots."
-            ];
-            const randomAnalysis = analyses[Math.floor(Math.random() * analyses.length)];
-            aiSummary.innerHTML = `<i data-lucide="info" style="width:14px; height:14px; vertical-align:middle; margin-right:5px;"></i> ${randomAnalysis}`;
+            const summary = buildAIMarketSummary();
+            aiSummary.innerHTML = `<i data-lucide="info" style="width:14px; height:14px; vertical-align:middle; margin-right:5px;"></i> ${summary}`;
+
+            const confidence = getModelConfidence(dashboardState.stats, dashboardState.trades);
+            updateModelConfidenceUI(confidence);
+
             if (window.lucide) lucide.createIcons();
         } catch (error) {
             console.error('AI Analysis error:', error);
         }
     }
 
-    function simulateRealTimeData() {
-        if (!performanceChart) return;
-
-        const lastVal = performanceChart.data.datasets[0].data.slice(-1)[0];
-        const newVal = lastVal + (Math.random() - 0.45) * 5000;
-
-        performanceChart.data.labels.shift();
-        performanceChart.data.labels.push(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-
-        performanceChart.data.datasets[0].data.shift();
-        performanceChart.data.datasets[0].data.push(newVal);
-        performanceChart.update('none');
-
-        [portfolioSparkline, pnlSparkline].forEach(chart => {
-            if (!chart) return;
-            chart.data.datasets[0].data.shift();
-            chart.data.datasets[0].data.push(Math.random() * 100);
-            chart.update('none');
-        });
+    function refreshDerivedVisuals() {
+        updatePerformanceCharts();
+        updateAIMarketAnalysis();
     }
 
     // Initial AI analysis and periodic refresh
     updateAIMarketAnalysis();
     setInterval(updateAIMarketAnalysis, 30000);
-    setInterval(simulateRealTimeData, 5000);
 
     function showEditBotModal(bot) {
         const modal = document.getElementById('editBotModal');
@@ -1249,11 +2279,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial load and periodic refresh
     fetchBots();
+    loadBotPresets();
     fetchTrades();
     fetchStats();
     fetchPositions();
+    fetchProductionAlerts();
+    loadHyperliquidSettings();
     setInterval(fetchBots, 5000);
     setInterval(fetchTrades, 10000);
     setInterval(fetchStats, 10000);
     setInterval(fetchPositions, 10000);
+    setInterval(fetchProductionAlerts, 15000);
 });

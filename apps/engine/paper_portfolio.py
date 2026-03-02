@@ -53,13 +53,35 @@ class PaperTradingPortfolio:
                 print(f"[Portfolio] Created new paper trading portfolio for {bot_id} with ${initial_balance:,.2f}")
             
             self.cash_balance = portfolio.cash_balance
-            self.positions = portfolio.positions or {}
+            self.positions = self._normalize_positions(portfolio.positions or {})
             self.total_equity = portfolio.total_equity
             self.realized_pnl = portfolio.realized_pnl
             self.saved_profits = portfolio.saved_profits or 0.0
             self.savings_ratio = portfolio.savings_ratio or 0.2
     
-    async def process_execution(self, execution: ExecutionResult, signal_side: TradeSide, symbol: str) -> Dict:
+    def _normalize_positions(self, positions: Dict) -> Dict:
+        normalized = {}
+        for symbol, payload in (positions or {}).items():
+            data = dict(payload or {})
+            amount = float(data.get("amount") or 0.0)
+            if amount <= 0:
+                continue
+
+            avg_price = float(data.get("avg_price") or 0.0)
+            side = str(data.get("side") or "long").lower()
+            if side not in {"long", "short"}:
+                side = "long"
+
+            mark_price = float(data.get("mark_price") or avg_price or 0.0)
+            normalized[symbol] = {
+                "amount": amount,
+                "avg_price": avg_price,
+                "side": side,
+                "mark_price": mark_price,
+            }
+        return normalized
+
+    async def process_execution(self, execution: ExecutionResult, signal_side: TradeSide, symbol: str, allow_short: bool = False) -> Dict:
         """
         Procesa una ejecución y actualiza el portfolio.
         
@@ -78,66 +100,116 @@ class PaperTradingPortfolio:
         
         pnl = 0.0
         
+        position = dict(self.positions.get(symbol) or {})
+        current_amount = float(position.get("amount") or 0.0)
+        current_avg_price = float(position.get("avg_price") or 0.0)
+        current_side = str(position.get("side") or "long").lower()
+
         if signal_side == TradeSide.BUY:
-            # Compra: reducir cash, aumentar posición
-            total_cost = trade_value + fee
-            
-            if self.cash_balance < total_cost:
-                print(f"[Portfolio] WARNING: Insufficient cash (${self.cash_balance:.2f} < ${total_cost:.2f})")
-                return {"success": False, "reason": "insufficient_cash"}
-            
-            self.cash_balance -= total_cost
-            
-            # Actualizar posición
-            if symbol not in self.positions:
-                self.positions[symbol] = {"amount": 0.0, "avg_price": 0.0}
-            
-            current_amount = self.positions[symbol]["amount"]
-            current_avg_price = self.positions[symbol]["avg_price"]
-            
-            # Calcular nuevo precio promedio (incluyendo comisión en el coste)
-            new_amount = current_amount + fill_amount
-            new_avg_price = ((current_amount * current_avg_price) + total_cost) / new_amount
-            
-            self.positions[symbol] = {
-                "amount": new_amount,
-                "avg_price": new_avg_price
-            }
-            
-            print(f"[Portfolio] BUY {fill_amount} {symbol} @ ${fill_price:,.2f} | Cash: ${self.cash_balance:,.2f}")
-        
-        elif signal_side == TradeSide.SELL:
-            # Venta: aumentar cash, reducir posición
-            if symbol not in self.positions or self.positions[symbol]["amount"] < fill_amount:
-                print(f"[Portfolio] WARNING: Insufficient position to sell")
-                return {"success": False, "reason": "insufficient_position"}
-            
-            # Calcular P&L realizado
-            avg_cost = self.positions[symbol]["avg_price"]
-            pnl = (fill_price - avg_cost) * fill_amount - fee
-            revenue = trade_value - fee
-            
-            # Repartir P&L según el savings_ratio
-            if pnl > 0:
-                to_save = pnl * self.savings_ratio
-                to_reinvest = pnl - to_save
-                self.saved_profits += to_save
-                self.cash_balance += (revenue - to_save) # revenue ya tiene el trade_value - fee
-                print(f"[Portfolio] Profit split: Save ${to_save:.2f} | Reinvest ${to_reinvest:.2f}")
+            if current_amount > 0 and current_side == "short":
+                if fill_amount > current_amount + 1e-9:
+                    return {"success": False, "reason": "cover_amount_exceeds_short_position"}
+
+                total_cost = trade_value + fee
+                if self.cash_balance < total_cost:
+                    print(f"[Portfolio] WARNING: Insufficient cash (${self.cash_balance:.2f} < ${total_cost:.2f})")
+                    return {"success": False, "reason": "insufficient_cash"}
+
+                self.cash_balance -= total_cost
+                pnl = (current_avg_price - fill_price) * fill_amount - fee
+                self.realized_pnl += pnl
+
+                remaining = current_amount - fill_amount
+                if remaining <= 0.0001:
+                    self.positions.pop(symbol, None)
+                else:
+                    self.positions[symbol] = {
+                        "amount": remaining,
+                        "avg_price": current_avg_price,
+                        "side": "short",
+                        "mark_price": fill_price,
+                    }
+
+                print(f"[Portfolio] BUY-COVER {fill_amount} {symbol} @ ${fill_price:,.2f} | P&L: ${pnl:,.2f} | Cash: ${self.cash_balance:,.2f}")
             else:
-                # Las pérdidas se restan del cash disponible para operar
-                self.cash_balance += revenue
-            
-            self.realized_pnl += pnl
-            
-            # Reducir posición
-            self.positions[symbol]["amount"] -= fill_amount
-            
-            # Eliminar posición si se cerró completamente
-            if self.positions[symbol]["amount"] <= 0.0001:  # Threshold para evitar decimales residuales
-                del self.positions[symbol]
-            
-            print(f"[Portfolio] SELL {fill_amount} {symbol} @ ${fill_price:,.2f} | P&L: ${pnl:,.2f} | Cash: ${self.cash_balance:,.2f}")
+                total_cost = trade_value + fee
+                if self.cash_balance < total_cost:
+                    print(f"[Portfolio] WARNING: Insufficient cash (${self.cash_balance:.2f} < ${total_cost:.2f})")
+                    return {"success": False, "reason": "insufficient_cash"}
+
+                self.cash_balance -= total_cost
+                if current_amount > 0 and current_side == "long":
+                    new_amount = current_amount + fill_amount
+                    new_avg_price = ((current_amount * current_avg_price) + total_cost) / max(new_amount, 1e-12)
+                else:
+                    new_amount = fill_amount
+                    new_avg_price = total_cost / max(new_amount, 1e-12)
+
+                self.positions[symbol] = {
+                    "amount": new_amount,
+                    "avg_price": new_avg_price,
+                    "side": "long",
+                    "mark_price": fill_price,
+                }
+
+                print(f"[Portfolio] BUY {fill_amount} {symbol} @ ${fill_price:,.2f} | Cash: ${self.cash_balance:,.2f}")
+
+        elif signal_side == TradeSide.SELL:
+            if current_amount > 0 and current_side == "long":
+                if fill_amount > current_amount + 1e-9:
+                    if not allow_short:
+                        print(f"[Portfolio] WARNING: Insufficient position to sell")
+                        return {"success": False, "reason": "insufficient_position"}
+                    return {"success": False, "reason": "sell_amount_exceeds_long_position"}
+
+                pnl = (fill_price - current_avg_price) * fill_amount - fee
+                revenue = trade_value - fee
+
+                if pnl > 0:
+                    to_save = pnl * self.savings_ratio
+                    to_reinvest = pnl - to_save
+                    self.saved_profits += to_save
+                    self.cash_balance += (revenue - to_save)
+                    print(f"[Portfolio] Profit split: Save ${to_save:.2f} | Reinvest ${to_reinvest:.2f}")
+                else:
+                    self.cash_balance += revenue
+
+                self.realized_pnl += pnl
+                remaining = current_amount - fill_amount
+                if remaining <= 0.0001:
+                    self.positions.pop(symbol, None)
+                else:
+                    self.positions[symbol] = {
+                        "amount": remaining,
+                        "avg_price": current_avg_price,
+                        "side": "long",
+                        "mark_price": fill_price,
+                    }
+
+                print(f"[Portfolio] SELL {fill_amount} {symbol} @ ${fill_price:,.2f} | P&L: ${pnl:,.2f} | Cash: ${self.cash_balance:,.2f}")
+            else:
+                if not allow_short:
+                    print(f"[Portfolio] WARNING: Insufficient position to sell")
+                    return {"success": False, "reason": "insufficient_position"}
+
+                proceeds = trade_value - fee
+                self.cash_balance += proceeds
+
+                if current_amount > 0 and current_side == "short":
+                    new_amount = current_amount + fill_amount
+                    new_avg_price = ((current_amount * current_avg_price) + trade_value) / max(new_amount, 1e-12)
+                else:
+                    new_amount = fill_amount
+                    new_avg_price = fill_price
+
+                self.positions[symbol] = {
+                    "amount": new_amount,
+                    "avg_price": new_avg_price,
+                    "side": "short",
+                    "mark_price": fill_price,
+                }
+
+                print(f"[Portfolio] SELL-SHORT {fill_amount} {symbol} @ ${fill_price:,.2f} | Cash: ${self.cash_balance:,.2f}")
         
         # Calcular equity total
         self._update_total_equity()
@@ -155,12 +227,33 @@ class PaperTradingPortfolio:
         }
     
     def _update_total_equity(self):
-        """Calcula el equity total (cash + valor de posiciones al precio actual)"""
-        # Nota: En esta versión simplificada, asumimos que el valor de las posiciones
-        # se actualiza cuando se procesan nuevas ejecuciones.
-        # En una versión más avanzada, se consultarían precios actuales de mercado.
-        self.total_equity = self.cash_balance
-        # TODO: Agregar valor de posiciones abiertas al precio actual
+        position_value = 0.0
+        for payload in self.positions.values():
+            amount = float(payload.get("amount") or 0.0)
+            mark_price = float(payload.get("mark_price") or payload.get("avg_price") or 0.0)
+            side = str(payload.get("side") or "long").lower()
+            if side == "short":
+                position_value -= amount * mark_price
+            else:
+                position_value += amount * mark_price
+        self.total_equity = self.cash_balance + position_value
+
+    def update_market_prices(self, marks: Dict[str, float]):
+        updated = False
+        for symbol, mark in (marks or {}).items():
+            if symbol not in self.positions:
+                continue
+            mark_price = float(mark or 0.0)
+            if mark_price <= 0:
+                continue
+            payload = dict(self.positions[symbol])
+            payload["mark_price"] = mark_price
+            self.positions[symbol] = payload
+            updated = True
+
+        if updated:
+            self._update_total_equity()
+            self._save_to_db()
     
     def _save_to_db(self):
         """Guarda el estado actual del portfolio en la base de datos"""
