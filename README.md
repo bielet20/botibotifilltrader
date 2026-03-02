@@ -38,4 +38,5 @@ A modular, scalable, and secure platform for assisted and automatic trading acro
    - [Functional Specs](docs/functional.md)
    - [Database Schema](docs/database_schema.md)
    - [API Specs](docs/api_spec.md)
+   - [Catálogo de Bots Seguros](docs/catalogo_bots_seguro.md)
    - [Roadmap](docs/roadmap.md)
