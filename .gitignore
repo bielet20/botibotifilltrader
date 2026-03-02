@@ -1,0 +1,36 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and runtime state
+trading.db
+*.sqlite3
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Logs and reports artifacts
+*.log
+reports/*.csv
+reports/*.json
+reports/*.jsonl
+reports/*.pdf
+reports/imported_market_data/
+
+# Editors
+.vscode/
+.idea/
