@@ -1,22 +1,38 @@
 import asyncio
 from typing import Dict, Any
 from datetime import datetime
+import time
+import os
+import math
 from apps.engine.ema_cross import EMACrossStrategy
 from apps.engine.technical_pro import TechnicalProStrategy
 from apps.engine.algo_expert import AlgoExpertStrategy
 from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
 from apps.engine.grid_trading import GridTradingStrategy
+from apps.engine.adaptive_learning import AdaptiveLearningStrategy
+from apps.engine.paired_balanced import PairedBalancedStrategy
 from apps.engine.market_data import MarketDataEngine
 from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
 from apps.engine.risk import RiskEngine
 from apps.shared.database import SessionLocal
-from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB
+from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB, BotLearningStateDB
+
+
+def _to_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    if value is None:
+        return default
+    return bool(value)
 
 class BotInstance:
     def __init__(self, bot_id: str, config: Dict):
         self.bot_id = bot_id
         self.config = config
+        self._ensure_self_management_defaults()
         self.status = BotStatus.STOPPED
         self._task = None
         
@@ -34,6 +50,18 @@ class BotInstance:
             lower = float(config.get("lower_limit", 60000))
             grids = int(config.get("num_grids", 10))
             self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
+        elif "adaptive_learning" in strategy_name.lower() or "arbitrario" in strategy_name.lower():
+            short_window = int(config.get("adaptive_short_window", 12))
+            long_window = int(config.get("adaptive_long_window", 48))
+            base_amount = float(config.get("adaptive_base_amount", 0.01))
+            self.strategy = AdaptiveLearningStrategy(
+                short_window=short_window,
+                long_window=long_window,
+                base_amount=base_amount,
+            )
+        elif "paired_balanced" in strategy_name.lower() or "pair" in strategy_name.lower():
+            lookback = int(config.get("pair_lookback", 120) or 120)
+            self.strategy = PairedBalancedStrategy(lookback=lookback)
         else:
             fast = config.get("fast_ema", 9)
             slow = config.get("slow_ema", 21)
@@ -43,10 +71,13 @@ class BotInstance:
         executor_type = config.get("executor", "paper").lower()
         if executor_type == "hyperliquid":
             from apps.engine.hyperliquid_executor import HyperliquidExecutor
-            self.executor = HyperliquidExecutor()
-            self.mde = MarketDataEngine(exchange_id='hyperliquid')
+            env_testnet_default = os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"
+            use_testnet = _to_bool(config.get("hyperliquid_testnet"), default=env_testnet_default)
+            self.executor = HyperliquidExecutor(use_testnet=use_testnet)
+            self.config["symbol"] = self.executor.normalize_symbol(self.config.get("symbol", "BTC/USDC:USDC"))
+            self.mde = MarketDataEngine(exchange_id='hyperliquid', use_testnet=use_testnet)
             self.portfolio = None  # Live trading doesn't use a paper portfolio
-            print(f"[BotManager] Bot {bot_id} using LIVE Hyperliquid executor ⚡")
+            print(f"[BotManager] Bot {bot_id} using LIVE Hyperliquid executor ⚡ ({'TESTNET' if use_testnet else 'MAINNET'})")
         else:
             self.executor = PaperTradingExecutor(fee_rate=0.001)
             self.mde = MarketDataEngine()
@@ -55,9 +86,180 @@ class BotInstance:
 
         self.risk_engine = RiskEngine()
 
+    def _ensure_self_management_defaults(self):
+        base_alloc = float(self.config.get("allocation", self.config.get("capital_allocation", 100.0)) or 100.0)
+        self.config.setdefault("self_managed", True)
+        self.config.setdefault("reinvest_ratio", 0.35)
+        self.config.setdefault("min_allocation", max(10.0, round(base_alloc * 0.4, 2)))
+        self.config.setdefault("max_allocation", max(round(base_alloc * 6.0, 2), 200.0))
+        self.config.setdefault("experience_boost", True)
+
+    def _load_learning_state(self, symbol: str):
+        with SessionLocal() as db:
+            row = (
+                db.query(BotLearningStateDB)
+                .filter(BotLearningStateDB.bot_id == self.bot_id, BotLearningStateDB.symbol == symbol)
+                .first()
+            )
+            return dict(row.state or {}) if row else {}
+
+    def _save_learning_state(self, symbol: str, state: Dict):
+        if not isinstance(state, dict) or not state:
+            return
+        with SessionLocal() as db:
+            row = (
+                db.query(BotLearningStateDB)
+                .filter(BotLearningStateDB.bot_id == self.bot_id, BotLearningStateDB.symbol == symbol)
+                .first()
+            )
+            if not row:
+                row = BotLearningStateDB(
+                    bot_id=self.bot_id,
+                    symbol=symbol,
+                    strategy=self.config.get("strategy"),
+                    state=state,
+                )
+                db.add(row)
+            else:
+                row.strategy = self.config.get("strategy")
+                merged = dict(row.state or {})
+                merged.update(state)
+                row.state = merged
+            db.commit()
+
+    def _apply_self_management(
+        self,
+        symbol: str,
+        realized_pnl: float,
+        executed_side: str = "",
+        executed_price: float = 0.0,
+    ):
+        if not bool(self.config.get("self_managed", True)):
+            return
+
+        with SessionLocal() as db:
+            bot_entry = db.query(BotDB).filter(BotDB.id == self.bot_id).first()
+            if not bot_entry:
+                return
+
+            row = (
+                db.query(BotLearningStateDB)
+                .filter(BotLearningStateDB.bot_id == self.bot_id, BotLearningStateDB.symbol == symbol)
+                .first()
+            )
+
+            state = dict(row.state or {}) if row else {}
+            total_trades = int(state.get("total_trades", 0) or 0) + 1
+            wins = int(state.get("wins", 0) or 0)
+            losses = int(state.get("losses", 0) or 0)
+            if realized_pnl > 0:
+                wins += 1
+                state["loss_streak"] = 0
+                state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
+            elif realized_pnl < 0:
+                losses += 1
+                state["win_streak"] = 0
+                state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
+
+            cumulative_pnl = float(state.get("cumulative_pnl", 0.0) or 0.0) + float(realized_pnl)
+            win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0.0
+
+            history = list(state.get("recent_pnl", []) or [])
+            history.append(round(float(realized_pnl), 8))
+            history = history[-40:]
+
+            cfg = dict(bot_entry.config or {})
+            current_alloc = float(cfg.get("allocation", cfg.get("capital_allocation", 100.0)) or 100.0)
+            reinvest_ratio = float(cfg.get("reinvest_ratio", self.config.get("reinvest_ratio", 0.35)) or 0.35)
+            min_alloc = float(cfg.get("min_allocation", self.config.get("min_allocation", 10.0)) or 10.0)
+            max_alloc = float(cfg.get("max_allocation", self.config.get("max_allocation", 200.0)) or 200.0)
+
+            if realized_pnl > 0:
+                alloc_delta = float(realized_pnl) * reinvest_ratio
+                new_alloc = min(max_alloc, current_alloc + alloc_delta)
+            elif realized_pnl < 0:
+                alloc_delta = min(abs(float(realized_pnl)) * 0.2, current_alloc * 0.1)
+                new_alloc = max(min_alloc, current_alloc - alloc_delta)
+            else:
+                new_alloc = current_alloc
+
+            risk_cfg = dict(cfg.get("risk_config") or {})
+            current_dd = float(risk_cfg.get("max_drawdown", 0.05) or 0.05)
+            if win_rate >= 58 and cumulative_pnl > 0:
+                current_dd = min(0.06, current_dd + 0.002)
+            elif win_rate < 42 or int(state.get("loss_streak", 0) or 0) >= 3:
+                current_dd = max(0.02, current_dd - 0.004)
+            risk_cfg["max_drawdown"] = round(current_dd, 4)
+
+            lev = float(cfg.get("leverage", 1.0) or 1.0)
+            if int(state.get("win_streak", 0) or 0) >= 4 and win_rate > 55:
+                lev = min(5.0, lev + 0.5)
+            elif int(state.get("loss_streak", 0) or 0) >= 3:
+                lev = max(1.0, lev - 0.5)
+
+            cfg["allocation"] = round(new_alloc, 4)
+            cfg["capital_allocation"] = round(new_alloc, 4)
+            cfg["risk_config"] = risk_cfg
+            cfg["leverage"] = round(lev, 2)
+
+            state.update(
+                {
+                    "total_trades": total_trades,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": round(win_rate, 4),
+                    "cumulative_pnl": round(cumulative_pnl, 8),
+                    "recent_pnl": history,
+                    "current_allocation": round(new_alloc, 8),
+                    "risk_max_drawdown": round(current_dd, 6),
+                    "leverage": round(lev, 4),
+                    "last_realized_pnl": round(float(realized_pnl), 8),
+                    "last_exec_side": str(executed_side or "").lower(),
+                    "last_exec_price": round(float(executed_price or 0.0), 8),
+                    "last_exec_at": round(float(time.time()), 3),
+                }
+            )
+
+            bot_entry.config = cfg
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(bot_entry, "config")
+
+            if not row:
+                row = BotLearningStateDB(
+                    bot_id=self.bot_id,
+                    symbol=symbol,
+                    strategy=self.config.get("strategy"),
+                    state=state,
+                )
+                db.add(row)
+            else:
+                row.strategy = self.config.get("strategy")
+                row.state = state
+
+            db.commit()
+            self.config.update(cfg)
+
+    async def shutdown(self):
+        """Gracefully close async resources used by this bot."""
+        try:
+            if getattr(self, "mde", None) and hasattr(self.mde, "close"):
+                await self.mde.close()
+        except Exception as e:
+            print(f"[BotInstance] Warning closing market data engine for {self.bot_id}: {e}")
+
+        try:
+            if getattr(self, "executor", None) and hasattr(self.executor, "close"):
+                await self.executor.close()
+        except Exception as e:
+            print(f"[BotInstance] Warning closing executor for {self.bot_id}: {e}")
+
     def reconfigure(self, new_config: Dict):
         """Update bot configuration and re-initialize strategy."""
         self.config.update(new_config)
+
+        if self.config.get("executor", "paper").lower() == "hyperliquid" and getattr(self, "executor", None):
+            if "symbol" in self.config:
+                self.config["symbol"] = self.executor.normalize_symbol(self.config.get("symbol"))
         
         # Re-initialize Strategy with new parameters
         strategy_name = self.config.get("strategy", "ema_cross")
@@ -73,6 +275,18 @@ class BotInstance:
             lower = float(self.config.get("lower_limit", 60000))
             grids = int(self.config.get("num_grids", 10))
             self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
+        elif "adaptive_learning" in strategy_name.lower() or "arbitrario" in strategy_name.lower():
+            short_window = int(self.config.get("adaptive_short_window", 12))
+            long_window = int(self.config.get("adaptive_long_window", 48))
+            base_amount = float(self.config.get("adaptive_base_amount", 0.01))
+            self.strategy = AdaptiveLearningStrategy(
+                short_window=short_window,
+                long_window=long_window,
+                base_amount=base_amount,
+            )
+        elif "paired_balanced" in strategy_name.lower() or "pair" in strategy_name.lower():
+            lookback = int(self.config.get("pair_lookback", 120) or 120)
+            self.strategy = PairedBalancedStrategy(lookback=lookback)
         else:
             fast = self.config.get("fast_ema", 9)
             slow = self.config.get("slow_ema", 21)
@@ -80,8 +294,376 @@ class BotInstance:
         
         print(f"[BotInstance] Bot {self.bot_id} reconfigured with new parameters.")
 
+    async def _execute_and_persist_signal(self, signal, strategy_name: str, executor_type: str, allow_short: bool = False):
+        execution = await self.executor.execute(signal)
+        if execution.status == "failed":
+            return False, 0.0, 0.0
+
+        fee_amount = 0.0
+        pnl_amount = 0.0
+        execution_accepted = True
+
+        if self.portfolio is not None:
+            portfolio_update = await self.portfolio.process_execution(
+                execution,
+                signal.side,
+                signal.symbol,
+                allow_short=allow_short,
+            )
+            if portfolio_update.get("success"):
+                fee_amount = float(portfolio_update.get("fee", 0.0) or 0.0)
+                pnl_amount = float(portfolio_update.get("pnl", 0.0) or 0.0)
+                with SessionLocal() as db:
+                    trade_entry = TradeDB(
+                        bot_id=self.bot_id,
+                        symbol=signal.symbol,
+                        side=signal.side,
+                        price=execution.avg_price,
+                        amount=execution.filled_amount,
+                        fee=fee_amount,
+                        pnl=pnl_amount,
+                        meta=signal.meta,
+                    )
+                    db.add(trade_entry)
+                    db.commit()
+                print(f"[{self.bot_id}] Trade: {signal.side} {signal.symbol} | P&L: ${pnl_amount:.2f}")
+            else:
+                execution_accepted = False
+                print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
+        else:
+            fee_amount = float(getattr(execution, 'fee', 0.0) or 0.0)
+            pnl_amount = 0.0
+            with SessionLocal() as db:
+                existing_pos = db.query(PositionDB).filter(
+                    PositionDB.bot_id == self.bot_id,
+                    PositionDB.symbol == signal.symbol,
+                    PositionDB.is_open == True
+                ).first()
+
+                if signal.side == TradeSide.SELL and existing_pos:
+                    closed_qty = min(existing_pos.quantity, execution.filled_amount)
+                    pnl_amount = (execution.avg_price - existing_pos.entry_price) * closed_qty
+
+                trade_entry = TradeDB(
+                    bot_id=self.bot_id,
+                    symbol=signal.symbol,
+                    side=signal.side,
+                    price=execution.avg_price,
+                    amount=execution.filled_amount,
+                    fee=fee_amount,
+                    pnl=pnl_amount,
+                    meta={"order_id": execution.order_id, "status": execution.status},
+                )
+                db.add(trade_entry)
+                db.commit()
+            print(f"[{self.bot_id}] ⚡ LIVE: {signal.side} {signal.symbol} @ ${execution.avg_price:,.2f} | Order #{execution.order_id}")
+
+        if execution_accepted:
+            with SessionLocal() as db:
+                order_log = OrderLogDB(
+                    bot_id=self.bot_id,
+                    symbol=signal.symbol,
+                    side=signal.side,
+                    status="closed",
+                    price=execution.avg_price,
+                    amount=signal.amount,
+                    filled_amount=execution.filled_amount,
+                    fee=fee_amount,
+                    pnl=pnl_amount,
+                    exchange_order_id=execution.order_id,
+                    strategy=strategy_name,
+                    executor=executor_type,
+                    meta=signal.meta,
+                )
+                db.add(order_log)
+
+                existing_pos = db.query(PositionDB).filter(
+                    PositionDB.bot_id == self.bot_id,
+                    PositionDB.symbol == signal.symbol,
+                    PositionDB.is_open == True
+                ).first()
+
+                if signal.side == TradeSide.BUY:
+                    if existing_pos and existing_pos.side == "short":
+                        new_qty = existing_pos.quantity - execution.filled_amount
+                        existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                        existing_pos.current_price = execution.avg_price
+                        if new_qty <= 0.0001:
+                            existing_pos.is_open = False
+                            existing_pos.quantity = 0
+                            existing_pos.unrealized_pnl = pnl_amount
+                        else:
+                            existing_pos.quantity = new_qty
+                    elif existing_pos:
+                        total_qty = existing_pos.quantity + execution.filled_amount
+                        avg_price = (existing_pos.entry_price * existing_pos.quantity + execution.avg_price * execution.filled_amount) / max(total_qty, 1e-12)
+                        existing_pos.entry_price = avg_price
+                        existing_pos.quantity = total_qty
+                        existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                        existing_pos.current_price = execution.avg_price
+                    else:
+                        new_pos = PositionDB(
+                            bot_id=self.bot_id,
+                            symbol=signal.symbol,
+                            side="long",
+                            entry_price=execution.avg_price,
+                            quantity=execution.filled_amount,
+                            current_price=execution.avg_price,
+                            fee_paid=fee_amount,
+                            is_open=True,
+                        )
+                        db.add(new_pos)
+                elif signal.side == TradeSide.SELL:
+                    if existing_pos and existing_pos.side == "long":
+                        new_qty = existing_pos.quantity - execution.filled_amount
+                        if new_qty <= 0.0001:
+                            existing_pos.is_open = False
+                            existing_pos.quantity = 0
+                        else:
+                            existing_pos.quantity = new_qty
+                        existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                        existing_pos.current_price = execution.avg_price
+                        existing_pos.unrealized_pnl = pnl_amount
+                    elif allow_short:
+                        if existing_pos and existing_pos.side == "short":
+                            total_qty = existing_pos.quantity + execution.filled_amount
+                            avg_price = (existing_pos.entry_price * existing_pos.quantity + execution.avg_price * execution.filled_amount) / max(total_qty, 1e-12)
+                            existing_pos.entry_price = avg_price
+                            existing_pos.quantity = total_qty
+                            existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                            existing_pos.current_price = execution.avg_price
+                        else:
+                            new_pos = PositionDB(
+                                bot_id=self.bot_id,
+                                symbol=signal.symbol,
+                                side="short",
+                                entry_price=execution.avg_price,
+                                quantity=execution.filled_amount,
+                                current_price=execution.avg_price,
+                                fee_paid=fee_amount,
+                                is_open=True,
+                            )
+                            db.add(new_pos)
+
+                db.commit()
+
+            self._apply_self_management(
+                signal.symbol,
+                float(pnl_amount) - float(fee_amount),
+                executed_side=(signal.side.value if hasattr(signal.side, "value") else str(signal.side)),
+                executed_price=float(execution.avg_price or 0.0),
+            )
+
+        return execution_accepted, pnl_amount, fee_amount
+
+    async def _run_paired_balanced(self):
+        strategy_name = self.config.get("strategy", "paired_balanced")
+        executor_type = self.config.get("executor", "paper")
+
+        symbol_a = str(self.config.get("pair_symbol_a") or self.config.get("symbol") or "BTC/USDT")
+        symbol_b = str(self.config.get("pair_symbol_b") or "ETH/USDT")
+        pair_key = f"{symbol_a}|{symbol_b}"
+        min_hold_sec = float(self.config.get("pair_min_hold_sec", 90.0) or 90.0)
+        min_rebalance_sec = float(self.config.get("pair_rebalance_sec", 30.0) or 30.0)
+
+        print(f"Bot {self.bot_id} paired-balanced loop: {symbol_a} vs {symbol_b}")
+
+        while self.status == BotStatus.RUNNING:
+            try:
+                ticker_a = await self.mde.fetch_ticker(symbol_a)
+                ticker_b = await self.mde.fetch_ticker(symbol_b)
+                price_a = float(ticker_a.get("last") or 0.0)
+                price_b = float(ticker_b.get("last") or 0.0)
+
+                if price_a <= 0 or price_b <= 0:
+                    await asyncio.sleep(10)
+                    continue
+
+                if self.portfolio:
+                    self.portfolio.update_market_prices({symbol_a: price_a, symbol_b: price_b})
+
+                history_a = await self.mde.fetch_ohlcv(symbol_a, limit=int(self.config.get("pair_lookback", 120) or 120) + 20)
+                history_b = await self.mde.fetch_ohlcv(symbol_b, limit=int(self.config.get("pair_lookback", 120) or 120) + 20)
+                pair_state = self._load_learning_state(pair_key)
+
+                decision = self.strategy.evaluate({
+                    "history_a": history_a,
+                    "history_b": history_b,
+                    "entry_z": float(self.config.get("pair_entry_z", 1.4) or 1.4),
+                    "exit_z": float(self.config.get("pair_exit_z", 0.25) or 0.25),
+                    "min_correlation": float(self.config.get("pair_min_correlation", 0.35) or 0.35),
+                    "enable_cadf": bool(self.config.get("pair_enable_cadf", True)),
+                    "cadf_alpha": float(self.config.get("pair_cadf_alpha", 0.05) or 0.05),
+                })
+
+                portfolio_summary = self.portfolio.get_summary() if self.portfolio else {}
+                positions = dict(portfolio_summary.get("positions") or {})
+                pos_a = dict(positions.get(symbol_a) or {})
+                pos_b = dict(positions.get(symbol_b) or {})
+                has_pair = bool(pos_a) and bool(pos_b)
+
+                pnl_a = 0.0
+                pnl_b = 0.0
+                if pos_a:
+                    side_a = str(pos_a.get("side") or "long")
+                    amt_a = float(pos_a.get("amount") or 0.0)
+                    entry_a = float(pos_a.get("avg_price") or 0.0)
+                    pnl_a = ((price_a - entry_a) * amt_a) if side_a == "long" else ((entry_a - price_a) * amt_a)
+                if pos_b:
+                    side_b = str(pos_b.get("side") or "long")
+                    amt_b = float(pos_b.get("amount") or 0.0)
+                    entry_b = float(pos_b.get("avg_price") or 0.0)
+                    pnl_b = ((price_b - entry_b) * amt_b) if side_b == "long" else ((entry_b - price_b) * amt_b)
+                pair_unrealized = pnl_a + pnl_b
+
+                allocation = float(self.config.get("allocation", self.config.get("capital_allocation", 100.0)) or 100.0)
+                stop_loss_abs = max(1.0, allocation * float(self.config.get("pair_stop_loss_pct", 0.015) or 0.015))
+                take_profit_abs = max(1.0, allocation * float(self.config.get("pair_take_profit_pct", 0.01) or 0.01))
+                profit_lock_abs = max(0.5, allocation * float(self.config.get("pair_profit_lock_pct", 0.004) or 0.004))
+
+                best_pair_pnl = float(pair_state.get("best_pair_pnl", 0.0) or 0.0)
+                if has_pair:
+                    best_pair_pnl = max(best_pair_pnl, pair_unrealized)
+
+                now_ts = float(time.time())
+                last_action_ts = float(pair_state.get("last_action_ts", 0.0) or 0.0)
+                can_react = (now_ts - last_action_ts) >= min_rebalance_sec
+
+                should_close = False
+                close_reason = ""
+                if has_pair and can_react:
+                    if pair_unrealized <= -stop_loss_abs:
+                        should_close = True
+                        close_reason = "pair_stop_loss"
+                    elif pair_unrealized >= take_profit_abs:
+                        should_close = True
+                        close_reason = "pair_take_profit"
+                    elif best_pair_pnl > 0 and pair_unrealized > 0 and pair_unrealized <= (best_pair_pnl - profit_lock_abs):
+                        should_close = True
+                        close_reason = "pair_profit_lock"
+                    elif decision.action == "close_pair":
+                        opened_at = float(pair_state.get("pair_opened_at", 0.0) or 0.0)
+                        if opened_at <= 0 or (now_ts - opened_at) >= min_hold_sec:
+                            should_close = True
+                            close_reason = decision.reason
+
+                if should_close:
+                    close_signals = []
+                    if pos_a:
+                        close_signals.append((symbol_a, TradeSide.SELL if str(pos_a.get("side") or "long") == "long" else TradeSide.BUY, float(pos_a.get("amount") or 0.0), price_a))
+                    if pos_b:
+                        close_signals.append((symbol_b, TradeSide.SELL if str(pos_b.get("side") or "long") == "long" else TradeSide.BUY, float(pos_b.get("amount") or 0.0), price_b))
+
+                    all_closed = True
+                    for sym, side, amount, px in close_signals:
+                        sig = TradeSignal(
+                            symbol=sym,
+                            side=side,
+                            amount=round(amount, 6),
+                            price=px,
+                            strategy_id="Paired_Balanced_v1",
+                            meta={
+                                "pair_key": pair_key,
+                                "pair_action": "close",
+                                "close_reason": close_reason,
+                                "zscore": round(float(decision.zscore), 6),
+                                "correlation": round(float(decision.correlation), 6),
+                            },
+                        )
+                        ok, _, _ = await self._execute_and_persist_signal(sig, strategy_name, executor_type, allow_short=True)
+                        all_closed = all_closed and ok
+
+                    if all_closed:
+                        pair_state.update({
+                            "pair_open": False,
+                            "pair_opened_at": 0.0,
+                            "last_action_ts": now_ts,
+                            "best_pair_pnl": 0.0,
+                            "last_pair_close_reason": close_reason,
+                            "last_pair_unrealized": round(pair_unrealized, 8),
+                        })
+                        self._save_learning_state(pair_key, pair_state)
+                        await asyncio.sleep(10)
+                        continue
+
+                if (not has_pair) and can_react and decision.action == "open_pair":
+                    factor = self.strategy.allocation_factor(decision.correlation, decision.zscore)
+                    leg_usd = max(8.0, allocation * 0.48 * factor)
+                    qty_a = max(0.000001, leg_usd / price_a)
+                    qty_b = max(0.000001, leg_usd / price_b)
+
+                    sig_a = TradeSignal(
+                        symbol=symbol_a,
+                        side=decision.side_a,
+                        amount=round(qty_a, 6),
+                        price=price_a,
+                        strategy_id="Paired_Balanced_v1",
+                        meta={
+                            "pair_key": pair_key,
+                            "pair_action": "open",
+                            "leg": "A",
+                            "zscore": round(float(decision.zscore), 6),
+                            "correlation": round(float(decision.correlation), 6),
+                        },
+                    )
+                    sig_b = TradeSignal(
+                        symbol=symbol_b,
+                        side=decision.side_b,
+                        amount=round(qty_b, 6),
+                        price=price_b,
+                        strategy_id="Paired_Balanced_v1",
+                        meta={
+                            "pair_key": pair_key,
+                            "pair_action": "open",
+                            "leg": "B",
+                            "zscore": round(float(decision.zscore), 6),
+                            "correlation": round(float(decision.correlation), 6),
+                        },
+                    )
+
+                    ok_a, _, _ = await self._execute_and_persist_signal(sig_a, strategy_name, executor_type, allow_short=True)
+                    ok_b, _, _ = await self._execute_and_persist_signal(sig_b, strategy_name, executor_type, allow_short=True)
+
+                    if ok_a and ok_b:
+                        pair_state.update({
+                            "pair_open": True,
+                            "pair_opened_at": now_ts,
+                            "last_action_ts": now_ts,
+                            "best_pair_pnl": 0.0,
+                            "last_open_zscore": round(float(decision.zscore), 8),
+                            "last_open_corr": round(float(decision.correlation), 8),
+                            "last_pair_unrealized": 0.0,
+                        })
+                    else:
+                        pair_state.update({
+                            "pair_open": False,
+                            "last_action_ts": now_ts,
+                            "last_open_error": "partial_or_failed_execution",
+                        })
+                    self._save_learning_state(pair_key, pair_state)
+                    await asyncio.sleep(10)
+                    continue
+
+                pair_state.update({
+                    "last_eval_at": now_ts,
+                    "last_action_ts": last_action_ts,
+                    "pair_open": has_pair,
+                    "best_pair_pnl": round(best_pair_pnl, 8),
+                    "last_pair_unrealized": round(pair_unrealized, 8),
+                    "last_zscore": round(float(decision.zscore), 8),
+                    "last_correlation": round(float(decision.correlation), 8),
+                    "last_decision": decision.reason,
+                })
+                self._save_learning_state(pair_key, pair_state)
+                await asyncio.sleep(10)
+
+            except Exception as pair_error:
+                print(f"[{self.bot_id}] Paired loop error: {pair_error}")
+                await asyncio.sleep(10)
+
     async def run(self):
         self.status = BotStatus.RUNNING
+        strategy_name = self.config.get("strategy", "ema_cross")
         
         # Sync initial state to DB
         with SessionLocal() as db:
@@ -95,139 +677,53 @@ class BotInstance:
 
         print(f"Bot {self.bot_id} starting loop...")
         try:
+            if "paired_balanced" in strategy_name.lower() or "pair" in strategy_name.lower():
+                await self._run_paired_balanced()
+                return
+
             while self.status == BotStatus.RUNNING:
                 symbol = self.config.get("symbol", "BTC/USDT")
                 # 1. Fetch data
                 ticker = await self.mde.fetch_ticker(symbol)
                 last_price = ticker.get('last', 0.0)
+
+                if self.portfolio is not None and last_price:
+                    self.portfolio.update_market_prices({symbol: float(last_price)})
                 
                 # Fetch history for technical analysis if needed
                 history = await self.mde.fetch_ohlcv(symbol, limit=250)
+                learning_state = self._load_learning_state(symbol)
                 
                 # 2. Analyze
                 signal = await self.strategy.analyze({
                     'last_price': last_price, 
                     'symbol': symbol,
                     'history': history,
-                    'portfolio': self.portfolio.get_summary() if self.portfolio else {}
+                    'portfolio': self.portfolio.get_summary() if self.portfolio else {},
+                    'allocation': float(self.config.get('allocation', self.config.get('capital_allocation', 100.0)) or 100.0),
+                    'adaptive_min_flip_move_pct': float(self.config.get('adaptive_min_flip_move_pct', 0.0012) or 0.0012),
+                    'adaptive_min_reentry_move_pct': float(self.config.get('adaptive_min_reentry_move_pct', 0.0008) or 0.0008),
+                    'adaptive_min_flip_interval_sec': float(self.config.get('adaptive_min_flip_interval_sec', 45.0) or 45.0),
+                    'adaptive_bootstrap_unlock_sec': float(self.config.get('adaptive_bootstrap_unlock_sec', 2700.0) or 2700.0),
+                    'adaptive_bootstrap_probe_interval_sec': float(self.config.get('adaptive_bootstrap_probe_interval_sec', 1800.0) or 1800.0),
+                    'learning_state': learning_state,
                 })
+
+                updated_learning_state = (signal.meta or {}).get('learning_state') if getattr(signal, 'meta', None) else None
+                if isinstance(updated_learning_state, dict):
+                    self._save_learning_state(symbol, updated_learning_state)
                 
                 # 3. Validate with Risk Engine
                 risk_result = await self.risk_engine.validate(signal)
                 
                 if risk_result.approved and signal.side != TradeSide.HOLD:
-                    # 4. Execute (paper or live)
-                    execution = await self.executor.execute(signal)
-
-                    if execution.status != "failed":
-                        executor_type = self.config.get("executor", "paper")
-                        strategy_name = self.config.get("strategy", "ema_cross")
-                        fee_amount = 0.0
-                        pnl_amount = 0.0
-
-                        if self.portfolio is not None:
-                            # 5a. Paper Trading — update portfolio
-                            portfolio_update = await self.portfolio.process_execution(
-                                execution,
-                                signal.side,
-                                signal.symbol
-                            )
-                            if portfolio_update.get("success"):
-                                fee_amount = portfolio_update.get("fee", 0.0)
-                                pnl_amount = portfolio_update.get("pnl", 0.0)
-                                with SessionLocal() as db:
-                                    trade_entry = TradeDB(
-                                        bot_id=self.bot_id,
-                                        symbol=signal.symbol,
-                                        side=signal.side,
-                                        price=execution.avg_price,
-                                        amount=execution.filled_amount,
-                                        fee=fee_amount,
-                                        pnl=pnl_amount,
-                                        meta=signal.meta
-                                    )
-                                    db.add(trade_entry)
-                                    db.commit()
-                                print(f"[{self.bot_id}] Trade: {signal.side} {signal.symbol} | P&L: ${pnl_amount:.2f}")
-                            else:
-                                print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
-                        else:
-                            # 5b. Live Hyperliquid
-                            with SessionLocal() as db:
-                                trade_entry = TradeDB(
-                                    bot_id=self.bot_id,
-                                    symbol=signal.symbol,
-                                    side=signal.side,
-                                    price=execution.avg_price,
-                                    amount=execution.filled_amount,
-                                    fee=0.0,
-                                    pnl=0.0,
-                                    meta={"order_id": execution.order_id, "status": execution.status}
-                                )
-                                db.add(trade_entry)
-                                db.commit()
-                            print(f"[{self.bot_id}] ⚡ LIVE: {signal.side} {signal.symbol} @ ${execution.avg_price:,.2f} | Order #{execution.order_id}")
-
-                        # --- Persist to OrderLogDB (always, for audit) ---
-                        with SessionLocal() as db:
-                            order_log = OrderLogDB(
-                                bot_id=self.bot_id,
-                                symbol=signal.symbol,
-                                side=signal.side,
-                                status="closed",
-                                price=execution.avg_price,
-                                amount=signal.amount,
-                                filled_amount=execution.filled_amount,
-                                fee=fee_amount,
-                                pnl=pnl_amount,
-                                exchange_order_id=execution.order_id,
-                                strategy=strategy_name,
-                                executor=executor_type,
-                                meta=signal.meta
-                            )
-                            db.add(order_log)
-
-                            # --- Update PositionDB ---
-                            existing_pos = db.query(PositionDB).filter(
-                                PositionDB.bot_id == self.bot_id,
-                                PositionDB.symbol == signal.symbol,
-                                PositionDB.is_open == True
-                            ).first()
-
-                            if signal.side == TradeSide.BUY:
-                                if existing_pos:
-                                    # Average down the entry price
-                                    total_qty = existing_pos.quantity + execution.filled_amount
-                                    avg_price = (existing_pos.entry_price * existing_pos.quantity + execution.avg_price * execution.filled_amount) / total_qty
-                                    existing_pos.entry_price = avg_price
-                                    existing_pos.quantity = total_qty
-                                    existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
-                                    existing_pos.current_price = execution.avg_price
-                                else:
-                                    new_pos = PositionDB(
-                                        bot_id=self.bot_id,
-                                        symbol=signal.symbol,
-                                        side="long",
-                                        entry_price=execution.avg_price,
-                                        quantity=execution.filled_amount,
-                                        current_price=execution.avg_price,
-                                        fee_paid=fee_amount,
-                                        is_open=True
-                                    )
-                                    db.add(new_pos)
-                            elif signal.side == TradeSide.SELL and existing_pos:
-                                # Reduce or close position
-                                new_qty = existing_pos.quantity - execution.filled_amount
-                                if new_qty <= 0.0001:
-                                    existing_pos.is_open = False
-                                    existing_pos.quantity = 0
-                                else:
-                                    existing_pos.quantity = new_qty
-                                existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
-                                existing_pos.current_price = execution.avg_price
-                                existing_pos.unrealized_pnl = pnl_amount
-
-                            db.commit()
+                    executor_type = self.config.get("executor", "paper")
+                    await self._execute_and_persist_signal(
+                        signal,
+                        strategy_name,
+                        executor_type,
+                        allow_short=bool(self.config.get("allow_short", False)),
+                    )
                 elif not risk_result.approved:
                     print(f"[{self.bot_id}] Trade rejected by risk engine: {risk_result.reason}")
                 else:
@@ -243,6 +739,7 @@ class BotInstance:
                 if bot_entry:
                     bot_entry.status = "stopped"
                     db.commit()
+            await self.shutdown()
             print(f"Bot {self.bot_id} loop ended.")
 
 class BotManager:
@@ -297,6 +794,15 @@ class BotManager:
                 bot._task.cancel()
             del self.active_bots[bot_id]
 
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(bot.shutdown())
+            except RuntimeError:
+                try:
+                    asyncio.run(bot.shutdown())
+                except Exception as e:
+                    print(f"[BotManager] Warning during shutdown for {bot_id}: {e}")
+
         # Always update DB status, even if bot wasn't in active memory
         with SessionLocal() as db:
             bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
@@ -318,6 +824,7 @@ class BotManager:
             
             # Close associate positions too
             db.query(PositionDB).filter(PositionDB.bot_id == bot_id).update({"is_open": False, "updated_at": datetime.utcnow()})
+            db.query(BotLearningStateDB).filter(BotLearningStateDB.bot_id == bot_id).delete()
             
             db.commit()
             return True

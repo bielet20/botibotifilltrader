@@ -19,6 +19,7 @@ alpaca-trade-api>=3.1.1
 # Math & Data
 pandas>=2.2.2
 numpy>=1.26.4
+statsmodels>=0.14.2
 
 # AI & LLM
 httpx>=0.27.0
