@@ -242,7 +242,12 @@ class HyperliquidExecutor(BaseExecutionProvider):
             if not self.exchange.markets:
                 await self.exchange.load_markets()
             
-            positions = await self.exchange.fetch_positions()
+            wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
+            params = {}
+            if wallet_address:
+                params["user"] = wallet_address
+
+            positions = await self.exchange.fetch_positions(params=params)
             print(f"[Hyperliquid] Found {len(positions)} raw position records.")
             
             # Filtrar solo las que tienen cantidad > 0

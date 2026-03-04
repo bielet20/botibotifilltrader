@@ -44,13 +44,17 @@ class ProductionGuardService:
     def _policy(self, bot: BotDB) -> Dict[str, Any]:
         config = dict(bot.config or {})
         policy = dict(config.get("production_policy") or {})
+        capital_allocation = float(config.get("capital_allocation") or bot.capital_allocation or 0.0)
         return {
             "enabled": bool(policy.get("enabled", True)),
             "window_trades": int(policy.get("window_trades", 30)),
             "min_trades": int(policy.get("min_trades", 8)),
-            "min_win_rate": float(policy.get("min_win_rate", 42.0)),
-            "min_net_pnl": float(policy.get("min_net_pnl", -2.0)),
-            "max_consecutive_losses": int(policy.get("max_consecutive_losses", 4)),
+            "min_win_rate": float(policy.get("min_win_rate", 50.0)),
+            "min_net_pnl": float(policy.get("min_net_pnl", 0.0)),
+            "max_consecutive_losses": int(policy.get("max_consecutive_losses", 2)),
+            "max_loss_abs": float(policy.get("max_loss_abs", 5.0)),
+            "max_loss_pct_of_allocation": float(policy.get("max_loss_pct_of_allocation", 0.01)),
+            "capital_allocation": capital_allocation,
             "stop_on_unproductive": bool(policy.get("stop_on_unproductive", True)),
         }
 
@@ -147,7 +151,21 @@ class ProductionGuardService:
                     reason_code = "insufficient_trades"
                     reason_msg = f"Calentamiento: {metrics['trade_count']}/{policy['min_trades']} trades"
                 else:
-                    if metrics["consecutive_losses"] >= policy["max_consecutive_losses"]:
+                    max_loss_abs = abs(float(policy.get("max_loss_abs", 5.0) or 5.0))
+                    max_loss_pct = abs(float(policy.get("max_loss_pct_of_allocation", 0.01) or 0.01))
+                    capital_allocation = abs(float(policy.get("capital_allocation", 0.0) or 0.0))
+                    dynamic_loss_cap = (capital_allocation * max_loss_pct) if capital_allocation > 0 else None
+                    effective_loss_cap = max_loss_abs
+                    if dynamic_loss_cap is not None:
+                        effective_loss_cap = min(max_loss_abs, dynamic_loss_cap)
+
+                    if metrics["net_pnl"] <= -effective_loss_cap:
+                        decision = "stop" if policy["stop_on_unproductive"] else "warn"
+                        reason_code = "loss_cap_breached"
+                        reason_msg = (
+                            f"Límite de pérdida excedido: net_pnl {metrics['net_pnl']} <= -{round(effective_loss_cap, 4)}"
+                        )
+                    elif metrics["consecutive_losses"] >= policy["max_consecutive_losses"]:
                         decision = "stop" if policy["stop_on_unproductive"] else "warn"
                         reason_code = "consecutive_losses"
                         reason_msg = f"Pérdidas consecutivas altas: {metrics['consecutive_losses']}"

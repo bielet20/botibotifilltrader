@@ -40,3 +40,53 @@ A modular, scalable, and secure platform for assisted and automatic trading acro
    - [API Specs](docs/api_spec.md)
    - [Catálogo de Bots Seguros](docs/catalogo_bots_seguro.md)
    - [Roadmap](docs/roadmap.md)
+
+## 🛡️ Monitoreo estable (producción)
+
+Para generar datos de validación paper sin corrupción de archivos, ejecuta siempre con el Python del entorno virtual y `PYTHONPATH`:
+
+```bash
+cd "/Users/bielrivero/Library/Mobile Documents/com~apple~CloudDocs/APPS ANTIGRAVITY BIEL/AAA BOT TRADING"
+PYTHONPATH=. .venv/bin/python scripts/monitor_paper_fleet.py --hours 2 --interval 120 --prefix paper_lab_prod
+```
+
+Este monitor ahora incluye:
+- Escritura robusta en CSV/JSONL (`flush` + `fsync`) por snapshot.
+- Escritura atómica del resumen final JSON (sin archivos truncados).
+- Lock por prefijo en `reports/<prefix>.lock` para evitar dos ejecuciones simultáneas sobre la misma corrida.
+- Sanitización de valores numéricos no válidos (`NaN`/`inf`) a `0.0`.
+
+## ⚙️ Comando único de operación (paper + estado producción)
+
+Nuevo script operativo: `scripts/production_control.sh`
+
+Ejemplos:
+
+```bash
+# 1) Estado de bots para producción (colores PREPARADO / CASI LISTO / BLOQUEADO)
+bash scripts/production_control.sh status --lookback-hours 24 --min-scored-trades 8
+
+# 2) Deploy operativo único (asegura API + lanza monitor paper en background con lock)
+bash scripts/production_control.sh deploy --hours 2 --interval 120 --prefix paper_lab_prod
+
+# 3) Activar un bot en producción (si cumple guardrails)
+bash scripts/production_control.sh activate Bot-LAB-EMA-BTC --lookback-hours 24 --min-scored-trades 8
+```
+
+Notas:
+- El comando `deploy` usa lock global en `/tmp/aaa_bot_production_deploy.lock`.
+- El monitor paper mantiene lock por prefijo (`reports/<prefix>.lock`).
+
+## 🖥️ Gestión desde la app (sin consola)
+
+En la pestaña **Ajustes** existe ahora el bloque **Operación Automática** para:
+- Ver estado en vivo de monitor paper + orquestador.
+- Iniciar operación completa con un click.
+- Parar operación completa con un click.
+
+Backend usado por la UI:
+- `GET /api/paper-monitor/status`
+- `POST /api/paper-monitor/start`
+- `POST /api/paper-monitor/stop`
+- `POST /api/autotrader/orchestrator/start`
+- `POST /api/autotrader/orchestrator/stop`

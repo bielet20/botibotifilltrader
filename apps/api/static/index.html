@@ -13,6 +13,7 @@
         rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="/static/styles.css?v=1.2">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
@@ -88,96 +89,79 @@
                     <!-- SECTIONS -->
                     <section id="overview" class="tab-content active">
                         <div class="dashboard-grid">
-                            <!-- Stats Row -->
-                            <div class="stat-card glass">
+                            <div class="glass full-card">
                                 <div class="glass-header">
-                                    <h3>PnL Neto (fees incl.)</h3>
-                                    <i data-lucide="trending-up" class="pulse-icon"></i>
+                                    <div>
+                                        <h2>🛰️ Estado Mainnet en Tiempo Real</h2>
+                                        <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                            Control visual total de producción: conexión, riesgo y ejecución real.
+                                        </p>
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end;">
+                                        <button id="refreshMainnetVisualBtn" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">ACTUALIZAR MAINNET</button>
+                                    </div>
                                 </div>
-                                <div class="glass-content">
-                                    <span class="stat-value" id="statTotalPnl"
-                                        style="color: var(--accent-emerald);">$0.00</span>
-                                    <span id="statWinLoss" style="color: var(--text-muted); font-size: 0.75rem;">— wins
-                                        / — losses</span>
-                                </div>
-                            </div>
-
-                            <div class="stat-card glass">
-                                <div class="glass-header">
-                                    <h3>Comisiones</h3>
-                                    <i data-lucide="ticket" style="color: #facc15;"></i>
-                                </div>
-                                <div class="glass-content">
-                                    <span class="stat-value" id="statTotalFees" style="color: #facc15;">$0.000</span>
-                                    <span id="statTotalVolume"
-                                        style="color: var(--text-muted); font-size: 0.75rem;">Volumen: $0</span>
-                                </div>
-                            </div>
-
-                            <div class="stat-card glass">
-                                <div class="glass-header">
-                                    <h3>Tasa de Éxito</h3>
-                                    <i data-lucide="target" style="color: var(--accent-emerald);"></i>
-                                </div>
-                                <div class="glass-content">
-                                    <span class="stat-value" id="statWinRate">0%</span>
-                                    <div
-                                        style="width: 100%; height: 4px; background: var(--bg-glass); border-radius: 2px; margin-top: 8px;">
-                                        <div id="statWinRateBar"
-                                            style="width: 0%; height: 100%; background: var(--accent-emerald); border-radius: 2px;">
-                                        </div>
+                                <div class="glass-content" style="padding: 1rem 1.25rem;">
+                                    <div id="mainnetVisualHeader"
+                                        style="margin-bottom:10px; font-size:0.8rem; color: var(--text-secondary); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.02);">
+                                        Cargando estado de producción...
+                                    </div>
+                                    <div id="mainnetVisualGrid"
+                                        style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-bottom:12px;">
+                                        <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color: var(--text-muted);">Cargando...</div>
+                                    </div>
+                                    <div id="mainnetVisualDetail"
+                                        style="border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; background: rgba(255,255,255,0.02); color: var(--text-secondary); font-size:0.78rem;">
+                                        Esperando datos de posiciones reales y alertas críticas...
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="stat-card glass">
+                            <div class="glass full-card control-center-card">
                                 <div class="glass-header">
-                                    <h3>Exposición</h3>
-                                    <i data-lucide="shield" style="color: var(--accent-blue);"></i>
+                                    <div>
+                                        <h2>🎯 Centro de Control de Bots</h2>
+                                        <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                            Prioriza candidatos, valida estado y ejecuta acciones críticas desde un solo bloque.
+                                        </p>
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end;">
+                                        <button id="toggleRuntimeOpsOverviewBtn" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-emerald); color: var(--accent-emerald);">MODO PRODUCCIÓN ON</button>
+                                        <button id="refreshIntelligenceTop" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">ACTUALIZAR</button>
+                                    </div>
                                 </div>
-                                <div class="glass-content">
-                                    <span class="stat-value" id="statOpenPositions">0</span>
-                                    <span id="statOpenOrders" style="color: var(--text-muted); font-size: 0.75rem;">0
-                                        órdenes activas</span>
-                                </div>
-                            </div>
-
-                            <!-- Main Chart Row -->
-                            <div class="glass resizable-container wide-card" id="resizableOverview">
-                                <div class="glass-header">
-                                    <h2>Rendimiento General</h2>
-                                    <i data-lucide="line-chart"></i>
-                                </div>
-                                <div class="glass-content" style="height: 350px;">
-                                    <canvas id="performanceChart"></canvas>
-                                </div>
-                            </div>
-
-                            <div class="glass wide-card">
-                                <div class="glass-header" style="border-left: 4px solid var(--accent-blue);">
-                                    <h2>Sugerencia Central de IA</h2>
-                                    <div class="pulse-icon"></div>
-                                </div>
-                                <div class="glass-content">
-                                    <p id="aiMarketSummary"
-                                        style="color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
-                                        Sin datos reales todavía. Esperando actualización del backend.
-                                    </p>
-                                    <div
-                                        style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
-                                        <span
-                                            style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Confianza
-                                            del Modelo</span>
-                                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
-                                            <div
-                                                style="flex: 1; height: 3px; background: rgba(59, 130, 246, 0.1); border-radius: 2px;">
-                                                <div id="aiModelConfidenceBar"
-                                                    style="width: 0%; height: 100%; background: var(--accent-blue); border-radius: 2px;">
-                                                </div>
-                                            </div>
-                                            <span id="aiModelConfidenceValue"
-                                                style="font-size: 0.75rem; font-weight: 700; color: var(--accent-blue);">0%</span>
-                                        </div>
+                                <div class="glass-content" style="padding: 1.25rem 1.5rem;">
+                                    <div id="runtimeOpsOverviewStatus"
+                                        style="margin-bottom:10px; font-size:0.78rem; color: var(--text-secondary); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.02);">
+                                        Operación automática: cargando estado...
+                                    </div>
+                                    <div id="intelligenceTopSummary"
+                                        style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-bottom:12px;">
+                                        <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color: var(--text-muted);">Cargando...</div>
+                                    </div>
+                                    <div style="overflow-x:auto; border:1px solid rgba(255,255,255,0.06); border-radius:12px; min-height:420px;">
+                                        <table class="institutional-table" style="margin:0; min-width: 1100px;">
+                                            <thead>
+                                                <tr>
+                                                    <th>Bot</th>
+                                                    <th>Estado</th>
+                                                    <th>WinRate</th>
+                                                    <th>Net PnL</th>
+                                                    <th>Trades</th>
+                                                    <th>Alertas</th>
+                                                    <th>Candidato Prod</th>
+                                                    <th style="text-align:right;">Control Rápido</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="intelligenceTopTableBody">
+                                                <tr>
+                                                    <td colspan="8" style="text-align:center; padding: 1rem; color: var(--text-muted);">Sin datos todavía.</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>
@@ -238,6 +222,31 @@
                                 </div>
                                 <div class="glass-content" id="productionAlertsContent">
                                     <!-- Injected via app.js -->
+                                </div>
+                            </div>
+
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <h2>🧪 Resultados de Pruebas & Parámetros Recomendados</h2>
+                                    <div style="display:flex; gap:8px; align-items:center;">
+                                        <select id="testInsightsWindow" class="glass"
+                                            style="padding: 6px 10px; font-size: 0.72rem; border: 1px solid var(--border-glass); color: var(--text-secondary); background: transparent; border-radius: 8px;">
+                                            <option value="24">24h</option>
+                                            <option value="48">48h</option>
+                                            <option value="168">7d</option>
+                                        </select>
+                                        <select id="testInsightsMinTrades" class="glass"
+                                            style="padding: 6px 10px; font-size: 0.72rem; border: 1px solid var(--border-glass); color: var(--text-secondary); background: transparent; border-radius: 8px;">
+                                            <option value="5">Min 5</option>
+                                            <option value="8" selected>Min 8</option>
+                                            <option value="12">Min 12</option>
+                                        </select>
+                                        <button id="refreshTestInsights" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">RECALCULAR</button>
+                                    </div>
+                                </div>
+                                <div class="glass-content" id="testInsightsContent">
+                                    <div style="color: var(--text-muted);">Esperando resultados de monitorización...</div>
                                 </div>
                             </div>
                         </div> <!-- closing .dashboard-grid -->
@@ -590,6 +599,23 @@
                                         style="padding: 12px 32px; background: var(--accent-blue); color: white; border: none; font-weight: 700; cursor: pointer;">GUARDAR
                                         Y VALIDAR CREDENCIALES</button>
                                 </div>
+
+                                <div style="margin-top: 1.5rem; padding: 14px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                                        <div>
+                                            <div style="font-size:0.8rem; text-transform:uppercase; color: var(--text-muted);">Operación Automática</div>
+                                            <div style="font-size:0.9rem; color: var(--text-secondary); margin-top:4px;">Gestiona monitor paper + orquestador sin consola.</div>
+                                        </div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                            <button id="refreshRuntimeOpsBtn" class="glass" style="padding:8px 10px; border:1px solid var(--accent-blue); color: var(--accent-blue);">ESTADO</button>
+                                            <button id="startRuntimeOpsBtn" class="glass" style="padding:8px 10px; border:1px solid var(--accent-emerald); color: var(--accent-emerald);">INICIAR OPERACIÓN</button>
+                                            <button id="stopRuntimeOpsBtn" class="glass" style="padding:8px 10px; border:1px solid var(--accent-ruby); color: var(--accent-ruby);">PARAR OPERACIÓN</button>
+                                        </div>
+                                    </div>
+                                    <div id="runtimeOpsStatus" style="margin-top:10px; font-size:0.82rem; color: var(--text-secondary); background: rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:10px;">
+                                        Estado: cargando...
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -678,6 +704,9 @@
                                         <label>Lower Limit ($)</label>
                                         <input type="number" id="newBotLowerLimit" class="form-control" value="60000">
                                     </div>
+                                </div>
+                                <div id="gridAutoHint" style="font-size: 0.74rem; color: var(--text-muted); margin-top: -6px; margin-bottom: 10px;">
+                                    Auto: los límites se ajustan según el activo/pair seleccionado y su volatilidad reciente.
                                 </div>
                                 <div class="form-group">
                                     <label>Number of Grids (Rejillas)</label>
@@ -889,7 +918,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=2.8"></script>
+    <script src="/static/app.js?v=4.3"></script>
     <script>
         lucide.createIcons();
     </script>

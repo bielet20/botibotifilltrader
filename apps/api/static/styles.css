@@ -526,6 +526,20 @@ th {
     grid-column: span 4;
 }
 
+.control-center-card .glass-header h2 {
+    font-size: 1.12rem;
+}
+
+.control-center-card .glass-content {
+    min-height: 560px;
+}
+
+.control-center-card .institutional-table th,
+.control-center-card .institutional-table td {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+
 /* Tab Sections */
 .tab-content {
     display: none;
