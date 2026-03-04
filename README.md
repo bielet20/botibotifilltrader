@@ -90,3 +90,24 @@ Backend usado por la UI:
 - `POST /api/paper-monitor/stop`
 - `POST /api/autotrader/orchestrator/start`
 - `POST /api/autotrader/orchestrator/stop`
+
+## 🤖 Advisor: creación de bots sin sobrescribir
+
+En **Analizar y Recomendar**:
+- **Crear bot ahora** siempre crea un bot **nuevo**.
+- **Auto-ejecutar** siempre crea un bot **nuevo** (`force_new=true`).
+- Ninguna de esas dos acciones sobrescribe bots existentes (por ejemplo, `Bot-472`).
+
+Si quieres editar un bot existente, usa explícitamente **Usar en formulario** y luego aplica cambios al bot objetivo.
+
+## 🔧 Runtime rápido API
+
+Script recomendado para levantar/parar la API local con la DB runtime estable:
+
+```bash
+bash scripts/api_runtime.sh start
+bash scripts/api_runtime.sh stop
+bash scripts/api_runtime.sh restart
+bash scripts/api_runtime.sh status
+bash scripts/api_runtime.sh logs
+```
