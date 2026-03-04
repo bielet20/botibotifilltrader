@@ -67,6 +67,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const botPromptStatus = document.getElementById('botPromptStatus');
     const productionAlertsContent = document.getElementById('productionAlertsContent');
     const refreshProductionAlerts = document.getElementById('refreshProductionAlerts');
+    const botQuotesContent = document.getElementById('botQuotesContent');
+    const refreshBotQuotesBtn = document.getElementById('refreshBotQuotesBtn');
     const refreshMainnetVisualBtn = document.getElementById('refreshMainnetVisualBtn');
     const mainnetVisualHeader = document.getElementById('mainnetVisualHeader');
     const mainnetVisualGrid = document.getElementById('mainnetVisualGrid');
@@ -78,6 +80,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const intelligenceTopSummary = document.getElementById('intelligenceTopSummary');
     const intelligenceTopTableBody = document.getElementById('intelligenceTopTableBody');
     const refreshIntelligenceTop = document.getElementById('refreshIntelligenceTop');
+    const botTrafficLightHeader = document.getElementById('botTrafficLightHeader');
+    const botTrafficLightSummary = document.getElementById('botTrafficLightSummary');
+    const botTrafficLightList = document.getElementById('botTrafficLightList');
     const toggleRuntimeOpsOverviewBtn = document.getElementById('toggleRuntimeOpsOverviewBtn');
     const runtimeOpsOverviewStatus = document.getElementById('runtimeOpsOverviewStatus');
     const settingsWalletAddressInput = document.getElementById('settingsWalletAddress');
@@ -1890,6 +1895,101 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function fetchBotQuotes() {
+        if (!botQuotesContent) return;
+
+        try {
+            const botsResponse = await fetch('/api/bots');
+            if (!botsResponse.ok) {
+                throw new Error('No se pudo cargar lista de bots');
+            }
+
+            const bots = await botsResponse.json();
+            const symbols = Array.from(
+                new Set(
+                    (Array.isArray(bots) ? bots : [])
+                        .map((bot) => {
+                            const cfg = bot.config || {};
+                            return String(cfg.symbol || bot.symbol || '').trim();
+                        })
+                        .filter(Boolean)
+                )
+            );
+
+            if (!symbols.length) {
+                botQuotesContent.innerHTML = '<div style="color: var(--text-muted);">No hay símbolos de bots para cotizar.</div>';
+                return;
+            }
+
+            const quotes = await Promise.all(
+                symbols.map(async (rawSymbol) => {
+                    const symbol = normalizeSymbolForMarketData(rawSymbol);
+                    try {
+                        const response = await fetch(`/api/market/price/${encodeURIComponent(symbol)}`);
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.detail || 'quote_error');
+                        }
+                        const data = await response.json();
+                        return {
+                            ok: true,
+                            rawSymbol,
+                            symbol,
+                            last: Number(data.last || 0),
+                            bid: Number(data.bid || 0),
+                            ask: Number(data.ask || 0),
+                            timestamp: data.timestamp || null,
+                        };
+                    } catch (error) {
+                        return {
+                            ok: false,
+                            rawSymbol,
+                            symbol,
+                            error: error.message || 'quote_error',
+                        };
+                    }
+                })
+            );
+
+            quotes.sort((a, b) => String(a.rawSymbol || '').localeCompare(String(b.rawSymbol || '')));
+
+            const now = new Date().toLocaleTimeString();
+            botQuotesContent.innerHTML = `
+                <div style="margin-bottom:8px; font-size:0.74rem; color: var(--text-muted);">Actualizado: ${now}</div>
+                ${quotes.map((q) => {
+                    if (!q.ok) {
+                        return `
+                            <div style="border:1px solid rgba(239,68,68,0.35); border-radius:10px; padding:10px; margin-bottom:8px; background: rgba(239,68,68,0.08);">
+                                <div style="font-weight:700; color: var(--accent-ruby);">${q.rawSymbol}</div>
+                                <div style="font-size:0.74rem; color: var(--text-secondary); margin-top:2px;">Error en ${q.symbol}: ${q.error}</div>
+                            </div>
+                        `;
+                    }
+
+                    const decimals = choosePriceDecimals(q.last || q.bid || q.ask || 0);
+                    const quoteTs = q.timestamp ? new Date(q.timestamp).toLocaleTimeString() : '-';
+                    return `
+                        <div style="border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; margin-bottom:8px; background: rgba(255,255,255,0.02);">
+                            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+                                <div style="font-weight:700;">${q.rawSymbol}</div>
+                                <span style="font-size:0.68rem; border:1px solid var(--accent-emerald); color: var(--accent-emerald); border-radius:10px; padding:2px 8px;">LIVE</span>
+                            </div>
+                            <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; margin-top:6px; font-size:0.78rem;">
+                                <div>Last<br><strong>${(q.last || 0).toFixed(decimals)}</strong></div>
+                                <div>Bid<br><strong>${(q.bid || 0).toFixed(decimals)}</strong></div>
+                                <div>Ask<br><strong>${(q.ask || 0).toFixed(decimals)}</strong></div>
+                            </div>
+                            <div style="font-size:0.70rem; color: var(--text-muted); margin-top:4px;">${q.symbol} · ts ${quoteTs}</div>
+                        </div>
+                    `;
+                }).join('')}
+            `;
+        } catch (error) {
+            console.error('Error fetching bot quotes:', error);
+            botQuotesContent.innerHTML = `<div style="color: var(--accent-ruby);">No se pudieron cargar cotizaciones: ${error.message}</div>`;
+        }
+    }
+
     async function acknowledgeCriticalAlertsForBot(botId) {
         const response = await fetch('/api/production/alerts?limit=50&only_open=true');
         if (!response.ok) {
@@ -2000,6 +2100,106 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    function buildBotSemaphore(item = {}, minScoredTrades = 8) {
+        const readiness = buildProductionReadiness(item, minScoredTrades);
+        const metrics = item.metrics || {};
+        const scoredTrades = Number(metrics.scored_trades || 0);
+        const winRate = Number(metrics.win_rate || 0);
+        const netPnl = Number(metrics.net_pnl || 0);
+        const critical = Number(item.open_critical_alerts || 0);
+
+        if (critical > 0 || scoredTrades < Math.max(3, Math.floor(minScoredTrades / 2)) || netPnl < 0) {
+            return {
+                level: 'RED',
+                color: 'var(--accent-ruby)',
+                action: 'PAUSAR y revisar riesgo/alertas antes de seguir operando',
+                readiness,
+                metrics,
+                details: `wr ${winRate.toFixed(2)}% · net ${netPnl.toFixed(2)} · trades ${scoredTrades} · alertas ${critical}`
+            };
+        }
+
+        if (!readiness.ready || winRate < 55 || scoredTrades < minScoredTrades) {
+            return {
+                level: 'YELLOW',
+                color: '#facc15',
+                action: 'SEGUIR EN PAPER y acumular más muestra antes de producción',
+                readiness,
+                metrics,
+                details: `wr ${winRate.toFixed(2)}% · net ${netPnl.toFixed(2)} · trades ${scoredTrades}`
+            };
+        }
+
+        return {
+            level: 'GREEN',
+            color: 'var(--accent-emerald)',
+            action: 'LISTO para activar producción con guardrails activos',
+            readiness,
+            metrics,
+            details: `wr ${winRate.toFixed(2)}% · net ${netPnl.toFixed(2)} · trades ${scoredTrades}`
+        };
+    }
+
+    function renderBotTrafficLightPanel(summary = {}, rows = [], minScoredTrades = 8) {
+        if (!botTrafficLightHeader || !botTrafficLightSummary || !botTrafficLightList) return;
+
+        const semRows = (rows || []).map((item) => ({ item, sem: buildBotSemaphore(item, minScoredTrades) }));
+        const redCount = semRows.filter((r) => r.sem.level === 'RED').length;
+        const yellowCount = semRows.filter((r) => r.sem.level === 'YELLOW').length;
+        const greenCount = semRows.filter((r) => r.sem.level === 'GREEN').length;
+
+        const globalLevel = redCount > 0 ? 'RED' : (yellowCount > 0 ? 'YELLOW' : 'GREEN');
+        const globalColor = globalLevel === 'RED'
+            ? 'var(--accent-ruby)'
+            : (globalLevel === 'YELLOW' ? '#facc15' : 'var(--accent-emerald)');
+        const globalText = globalLevel === 'RED'
+            ? 'RIESGO ALTO · revisar alertas y bots en rojo'
+            : (globalLevel === 'YELLOW'
+                ? 'ESTADO INTERMEDIO · consolidar muestra en paper'
+                : 'ESTADO SALUDABLE · sistema listo para escalar');
+
+        botTrafficLightHeader.innerHTML = `
+            <strong>Semáforo Global:</strong>
+            <span style="color:${globalColor}; font-weight:700;">${globalLevel}</span>
+            · ${globalText}
+        `;
+
+        botTrafficLightSummary.innerHTML = `
+            <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(16,185,129,0.08);">
+                <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Verde</div>
+                <div style="font-size:1rem; font-weight:700; color: var(--accent-emerald); margin-top:4px;">${greenCount}</div>
+            </div>
+            <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(250,204,21,0.08);">
+                <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Amarillo</div>
+                <div style="font-size:1rem; font-weight:700; color: #facc15; margin-top:4px;">${yellowCount}</div>
+            </div>
+            <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(239,68,68,0.08);">
+                <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Rojo</div>
+                <div style="font-size:1rem; font-weight:700; color: var(--accent-ruby); margin-top:4px;">${redCount}</div>
+            </div>
+            <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);">
+                <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Bots analizados</div>
+                <div style="font-size:1rem; font-weight:700; color: var(--text-secondary); margin-top:4px;">${summary.bots_analyzed ?? semRows.length}</div>
+            </div>
+        `;
+
+        if (!semRows.length) {
+            botTrafficLightList.innerHTML = '<div style="color: var(--text-muted);">Sin datos para calcular semáforo.</div>';
+            return;
+        }
+
+        botTrafficLightList.innerHTML = semRows.slice(0, 8).map(({ item, sem }) => `
+            <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+                <div>
+                    <div style="font-weight:700;">${item.bot_id || '-'}</div>
+                    <div style="font-size:0.72rem; color: var(--text-muted);">${item.strategy || '-'} · ${sem.details}</div>
+                    <div style="font-size:0.74rem; color:${sem.color}; margin-top:2px;">${sem.action}</div>
+                </div>
+                <span style="font-size:0.68rem; border:1px solid ${sem.color}; color:${sem.color}; border-radius:10px; padding:2px 8px; white-space:nowrap;">${sem.level}</span>
+            </div>
+        `).join('');
+    }
+
     function renderIntelligenceTop(summary = {}, rows = [], selectedWindow = 24, selectedMinTrades = 8) {
         const orderedRows = sortInsightsRows(rows);
 
@@ -2099,6 +2299,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const orderedRows = sortInsightsRows(rows);
 
             renderIntelligenceTop(summary, orderedRows, selectedWindow, selectedMinTrades);
+            renderBotTrafficLightPanel(summary, orderedRows, selectedMinTrades);
 
             if (!orderedRows.length) {
                 if (testInsightsContent) {
@@ -2197,6 +2398,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (intelligenceTopTableBody) {
                 intelligenceTopTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 1rem; color: var(--accent-ruby);">Error cargando datos: ${error.message}</td></tr>`;
+            }
+            if (botTrafficLightHeader) {
+                botTrafficLightHeader.innerHTML = '<strong>Semáforo Global:</strong> <span style="color: var(--accent-ruby); font-weight:700;">ERROR</span> · no se pudo calcular estado';
+            }
+            if (botTrafficLightSummary) {
+                botTrafficLightSummary.innerHTML = '<div style="padding:10px; border:1px solid rgba(239,68,68,0.45); border-radius:10px; color: var(--accent-ruby);">Sin datos de semáforo.</div>';
+            }
+            if (botTrafficLightList) {
+                botTrafficLightList.innerHTML = `<div style="color: var(--accent-ruby);">Error calculando semáforo: ${error.message}</div>`;
             }
         }
     }
@@ -2744,6 +2954,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (refreshMainnetVisualBtn) {
         refreshMainnetVisualBtn.addEventListener('click', loadMainnetVisualControl);
+    }
+
+    if (refreshBotQuotesBtn) {
+        refreshBotQuotesBtn.addEventListener('click', fetchBotQuotes);
     }
 
     if (saveHyperliquidSettingsBtn) {
@@ -3417,6 +3631,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchStats();
     fetchPositions();
     fetchProductionAlerts();
+    fetchBotQuotes();
     fetchTestInsights();
     loadMainnetVisualControl();
     loadHyperliquidSettings();
@@ -3426,6 +3641,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(fetchStats, 10000);
     setInterval(fetchPositions, 10000);
     setInterval(fetchProductionAlerts, 15000);
+    setInterval(fetchBotQuotes, 10000);
     setInterval(fetchTestInsights, 20000);
     setInterval(loadMainnetVisualControl, 15000);
 });
