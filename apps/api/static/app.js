@@ -62,6 +62,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const newBotPreset = document.getElementById('newBotPreset');
     const presetQuickDoc = document.getElementById('presetQuickDoc');
     const advisorResults = document.getElementById('advisorResults');
+    const newBotPrompt = document.getElementById('newBotPrompt');
+    const generateBotFromTextBtn = document.getElementById('generateBotFromTextBtn');
+    const botPromptStatus = document.getElementById('botPromptStatus');
     const productionAlertsContent = document.getElementById('productionAlertsContent');
     const refreshProductionAlerts = document.getElementById('refreshProductionAlerts');
     const refreshMainnetVisualBtn = document.getElementById('refreshMainnetVisualBtn');
@@ -362,10 +365,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 15000);
     }
 
-    function renderSettingsStatus(checks, saved = false) {
+    function renderSettingsStatus(checks, saved = false, useTestnet = true) {
         if (!settingsStatus || !checks) return;
         const ready = !!checks.ready_for_real_market;
         const authOk = !!checks.mainnet_auth_ok;
+        const selectedEnv = String(checks.selected_env || (useTestnet ? 'testnet' : 'mainnet')).toLowerCase();
+        const selectedEnvLabel = selectedEnv.toUpperCase();
+        const selectedValueFallback = selectedEnv === 'testnet'
+            ? checks.testnet_account_value
+            : checks.mainnet_account_value;
+        const selectedWithdrawableFallback = selectedEnv === 'testnet'
+            ? checks.testnet_withdrawable
+            : checks.mainnet_withdrawable;
+        const selectedMarginUsedFallback = selectedEnv === 'testnet'
+            ? checks.testnet_margin_used
+            : checks.mainnet_margin_used;
+        const selectedMarginUsagePctFallback = selectedEnv === 'testnet'
+            ? checks.testnet_margin_usage_pct
+            : checks.mainnet_margin_usage_pct;
+        const selectedAccountValue = toNumber(checks.selected_env_account_value, toNumber(selectedValueFallback, 0));
+        const selectedWithdrawable = toNumber(checks.selected_env_withdrawable, toNumber(selectedWithdrawableFallback, 0));
+        const selectedMarginUsed = toNumber(checks.selected_env_margin_used, toNumber(selectedMarginUsedFallback, 0));
+        const selectedMarginUsagePct = toNumber(
+            checks.selected_env_margin_usage_pct,
+            toNumber(selectedMarginUsagePctFallback, selectedAccountValue > 0 ? (selectedMarginUsed / selectedAccountValue) * 100 : 0)
+        );
+        const selectedRiskMeta = getMarginRiskMeta(selectedMarginUsagePct);
+        const selectedAccountError = checks.selected_env_account_error || '';
         const testnetValue = toNumber(checks.testnet_account_value, 0);
         const mainnetValue = toNumber(checks.mainnet_account_value, 0);
         const mainnetWithdrawable = toNumber(checks.mainnet_withdrawable, 0);
@@ -379,8 +405,11 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsStatus.innerHTML = [
             `<strong>${title}</strong>`,
             `<div style="margin-top: 6px;">${savedLine}Auth mainnet: ${authOk ? 'OK' : 'ERROR'}</div>`,
+            `<div><strong>Saldo billetera conectada (${selectedEnvLabel}):</strong> $${selectedAccountValue.toFixed(2)}</div>`,
+            `<div>${selectedEnvLabel} disponible: $${selectedWithdrawable.toFixed(2)} | Margen en uso: $${selectedMarginUsed.toFixed(2)} | <span style="color:${selectedRiskMeta.color}; font-weight:700;">${selectedMarginUsagePct.toFixed(2)}% (${selectedRiskMeta.label})</span></div>`,
             `<div>Saldo testnet: $${testnetValue.toFixed(2)} | Saldo mainnet: $${mainnetValue.toFixed(2)}</div>`,
             `<div>Mainnet disponible: $${mainnetWithdrawable.toFixed(2)} | Margen en uso: $${mainnetMarginUsed.toFixed(2)} | <span style="color:${riskMeta.color}; font-weight:700;">${marginUsagePct.toFixed(2)}% (${riskMeta.label})</span></div>`,
+            selectedAccountError ? `<div style="color: #facc15; margin-top: 4px;">${selectedEnvLabel}: no se pudo leer equity (${selectedAccountError})</div>` : '',
             authError ? `<div style="color: var(--accent-ruby); margin-top: 4px;">${authError}</div>` : ''
         ].join('');
     }
@@ -406,7 +435,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (settingsUseTestnetSelect) {
                 settingsUseTestnetSelect.value = data.use_testnet ? 'true' : 'false';
             }
-            renderSettingsStatus(data.checks, false);
+            renderSettingsStatus(data.checks, false, !!data.use_testnet);
         } catch (error) {
             console.error('Error loading Hyperliquid settings:', error);
             settingsStatus.textContent = 'Error cargando ajustes: ' + error.message;
@@ -455,7 +484,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 settingsSigningKeyInput.value = '';
                 settingsSigningKeyInput.placeholder = '******** (guardada)';
             }
-            renderSettingsStatus(data.checks, true);
+            renderSettingsStatus(data.checks, true, !!data.use_testnet);
         } catch (error) {
             console.error('Error saving Hyperliquid settings:', error);
             settingsStatus.textContent = 'Error guardando ajustes: ' + error.message;
@@ -551,19 +580,30 @@ document.addEventListener('DOMContentLoaded', () => {
             const runtime = await runtimeRes.json();
 
             const checks = settings?.checks || {};
-            const accountValue = toNumber(checks.mainnet_account_value, 0);
-            const availableCapitalRaw = toNumber(checks.mainnet_withdrawable, NaN);
+            const selectedEnv = String(checks.selected_env || (settings?.use_testnet ? 'testnet' : 'mainnet')).toLowerCase();
+            const selectedEnvLabel = selectedEnv.toUpperCase();
+            const accountValue = toNumber(
+                checks.selected_env_account_value,
+                selectedEnv === 'testnet' ? checks.testnet_account_value : checks.mainnet_account_value
+            );
+            const availableCapitalRaw = toNumber(
+                checks.selected_env_withdrawable,
+                selectedEnv === 'testnet' ? checks.testnet_withdrawable : checks.mainnet_withdrawable
+            );
             const availableCapital = Number.isFinite(availableCapitalRaw)
                 ? availableCapitalRaw
-                : Math.max(accountValue - toNumber(checks.mainnet_margin_used, 0), 0);
-            const marginUsedRaw = toNumber(checks.mainnet_margin_used, NaN);
+                : Math.max(accountValue - toNumber(checks.selected_env_margin_used, 0), 0);
+            const marginUsedRaw = toNumber(checks.selected_env_margin_used, NaN);
             const marginUsed = Number.isFinite(marginUsedRaw)
                 ? marginUsedRaw
                 : Math.max(accountValue - availableCapital, 0);
-            const exposureNotional = toNumber(checks.mainnet_exposure_notional, 0);
-            const marginUsagePct = toNumber(checks.mainnet_margin_usage_pct, accountValue > 0 ? (marginUsed / accountValue) * 100 : 0);
+            const exposureNotional = toNumber(
+                checks.selected_env_exposure_notional,
+                selectedEnv === 'testnet' ? 0 : checks.mainnet_exposure_notional
+            );
+            const marginUsagePct = toNumber(checks.selected_env_margin_usage_pct, accountValue > 0 ? (marginUsed / accountValue) * 100 : 0);
             const riskMeta = getMarginRiskMeta(marginUsagePct);
-            const authOk = !!checks.mainnet_auth_ok;
+            const authOk = !!checks.selected_env_auth_ok;
             const ready = !!checks.ready_for_real_market;
 
             const criticalOpen = Array.isArray(alerts)
@@ -586,9 +626,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const statusColor = ready ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
             mainnetVisualHeader.innerHTML = `
-                <strong>Producción real:</strong>
+                <strong>Billetera conectada (${selectedEnvLabel}):</strong>
                 <span style="color:${statusColor}; font-weight:700;">${ready ? 'PREPARADA' : 'NO PREPARADA'}</span>
-                · Auth mainnet: ${authOk ? 'OK' : 'ERROR'}
+                · Auth ${selectedEnvLabel}: ${authOk ? 'OK' : 'ERROR'}
                 · Equity: $${accountValue.toFixed(2)}
                 · Disponible: $${availableCapital.toFixed(2)}
                 · Margen uso: $${marginUsed.toFixed(2)}
@@ -598,7 +638,7 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
 
             mainnetVisualGrid.innerHTML = [
-                `<div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);"><div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Capital Disponible</div><div style="font-size:1rem; font-weight:700; color:${availableCapital > 0 ? 'var(--accent-emerald)' : 'var(--text-secondary)'}; margin-top:4px;">$${availableCapital.toFixed(2)}</div><div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Withdrawable mainnet</div></div>`,
+                `<div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);"><div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Capital Disponible</div><div style="font-size:1rem; font-weight:700; color:${availableCapital > 0 ? 'var(--accent-emerald)' : 'var(--text-secondary)'}; margin-top:4px;">$${availableCapital.toFixed(2)}</div><div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Withdrawable ${selectedEnvLabel}</div></div>`,
                 `<div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);"><div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Margen en Uso</div><div style="font-size:1rem; font-weight:700; color:${marginUsed > 0 ? 'var(--accent-blue)' : 'var(--text-secondary)'}; margin-top:4px;">$${marginUsed.toFixed(2)}</div><div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Equity - disponible</div></div>`,
                 `<div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);"><div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Posiciones Abiertas</div><div style="font-size:1rem; font-weight:700; color:${positionsCount > 0 ? 'var(--accent-emerald)' : 'var(--text-secondary)'}; margin-top:4px;">${positionsCount}</div><div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Exposición: $${exposureNotional.toFixed(2)}</div></div>`,
                 `<div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);"><div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Alertas Críticas</div><div style="font-size:1rem; font-weight:700; color:${criticalOpen > 0 ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; margin-top:4px;">${criticalOpen}</div><div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Guard rows: ${guardCount}</div></div>`
@@ -615,11 +655,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 : 'Sin alertas abiertas.';
 
             const noPositionsBadge = noOpenPositions
-                ? `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(250,204,21,0.55); border-radius:8px; color:#facc15; font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Sin posiciones abiertas en mainnet</div>`
-                : `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(16,185,129,0.45); border-radius:8px; color:var(--accent-emerald); font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Mainnet con posiciones activas</div>`;
+                ? `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(250,204,21,0.55); border-radius:8px; color:#facc15; font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Sin posiciones abiertas en ${selectedEnvLabel}</div>`
+                : `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(16,185,129,0.45); border-radius:8px; color:var(--accent-emerald); font-weight:700; text-transform:uppercase; letter-spacing:.03em;">${selectedEnvLabel} con posiciones activas</div>`;
 
             mainnetVisualDetail.innerHTML = `
-                <div style="margin-bottom:4px;"><strong>Bots live:</strong> ${runningLiveBots.length}/${liveBots.length} running · hyperliquid mainnet</div>
+                <div style="margin-bottom:4px;"><strong>Bots live:</strong> ${runningLiveBots.length}/${liveBots.length} running · hyperliquid ${selectedEnvLabel.toLowerCase()}</div>
                 <div style="margin-bottom:4px;"><strong>Uso de margen:</strong> <span style="color:${riskMeta.color}; font-weight:700;">${marginUsagePct.toFixed(2)}% (${riskMeta.label})</span> del equity</div>
                 <div><strong>Última alerta:</strong> ${latestAlertText}</div>
                 ${noPositionsBadge}
@@ -1675,6 +1715,62 @@ document.addEventListener('DOMContentLoaded', () => {
         if (executorSelect) executorSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
+    async function generateBotParamsFromPrompt() {
+        if (!generateBotFromTextBtn || !newBotPrompt) return;
+
+        const prompt = String(newBotPrompt.value || '').trim();
+        const symbol = document.getElementById('newBotSymbol')?.value || 'BTC/USDT';
+        const allocation = parseFloat(document.getElementById('newBotAllocation')?.value || 1000);
+
+        if (!prompt) {
+            if (botPromptStatus) {
+                botPromptStatus.style.color = 'var(--accent-ruby)';
+                botPromptStatus.textContent = 'Escribe primero el texto de la estrategia.';
+            }
+            return;
+        }
+
+        generateBotFromTextBtn.disabled = true;
+        const prevLabel = generateBotFromTextBtn.textContent;
+        generateBotFromTextBtn.textContent = 'GENERANDO...';
+        if (botPromptStatus) {
+            botPromptStatus.style.color = 'var(--text-muted)';
+            botPromptStatus.textContent = 'Analizando prompt y generando parámetros...';
+        }
+
+        try {
+            const response = await fetch('/api/bot-advisor/from-text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt, symbol, allocation })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudieron generar parámetros');
+            }
+
+            const data = await response.json();
+            const config = data?.config || {};
+            const meta = data?.meta || {};
+            applyConfigToCreateForm(config);
+
+            if (botPromptStatus) {
+                botPromptStatus.style.color = 'var(--accent-emerald)';
+                botPromptStatus.textContent = `Parámetros aplicados: ${String(meta.detected_strategy || '-')} · riesgo ${String(meta.risk_level || '-')} · horizonte ${String(meta.horizon || '-')}`;
+            }
+        } catch (error) {
+            console.error('Error generating bot params from prompt:', error);
+            if (botPromptStatus) {
+                botPromptStatus.style.color = 'var(--accent-ruby)';
+                botPromptStatus.textContent = `Error: ${error.message}`;
+            }
+        } finally {
+            generateBotFromTextBtn.disabled = false;
+            generateBotFromTextBtn.textContent = prevLabel;
+        }
+    }
+
     function renderAdvisorResults(data) {
         if (!advisorResults) return;
         const recommendations = data?.recommendations || [];
@@ -2676,6 +2772,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (refreshIntelligenceTop) {
         refreshIntelligenceTop.addEventListener('click', fetchTestInsights);
+    }
+
+    if (generateBotFromTextBtn) {
+        generateBotFromTextBtn.addEventListener('click', generateBotParamsFromPrompt);
     }
 
     if (testInsightsWindow) {

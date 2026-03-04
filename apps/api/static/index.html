@@ -756,6 +756,15 @@
                                 <input type="number" id="newBotAllocation" class="form-control" value="1000">
                             </div>
                             <div class="form-group">
+                                <label>Impulsar estrategia por texto (Prompt)</label>
+                                <textarea id="newBotPrompt" class="form-control" rows="3" placeholder="Ejemplo: Quiero una estrategia conservadora de pair trading BTC/ETH con baja exposición y filtros fuertes."></textarea>
+                                <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
+                                    <button id="generateBotFromTextBtn" class="glass"
+                                        style="border: 1px solid var(--accent-emerald); color: var(--accent-emerald); background: transparent; padding: 8px 12px;">GENERAR PARÁMETROS DESDE TEXTO</button>
+                                    <span id="botPromptStatus" style="font-size:0.74rem; color: var(--text-muted);">Describe la idea y aplica parámetros automáticos.</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
                                 <label>Análisis inteligente de asignación</label>
                                 <button id="analyzeBotBtn" class="glass"
                                     style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; padding: 10px;">ANALIZAR
@@ -918,7 +927,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=4.3"></script>
+    <script src="/static/app.js?v=4.5"></script>
     <script>
         lucide.createIcons();
     </script>

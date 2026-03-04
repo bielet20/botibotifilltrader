@@ -322,6 +322,96 @@ def _adaptive_parameter_recommendation(strategy: str, config: dict, metrics: dic
     }
 
 
+def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict:
+    prompt_text = (prompt or "").strip()
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    p = prompt_text.lower()
+    normalized_symbol = (symbol or "BTC/USDT").strip() or "BTC/USDT"
+    safe_allocation = max(20.0, float(allocation or 500.0))
+
+    strategy = "ema_cross"
+    if any(k in p for k in ["pair", "paired", "cointegration", "zscore", "z-score", "correl"]):
+        strategy = "paired_balanced"
+    elif any(k in p for k in ["grid", "rejilla", "rango", "range"]):
+        strategy = "grid_trading"
+    elif any(k in p for k in ["adaptive", "aprendiz", "learning", "reinvert"]):
+        strategy = "adaptive_learning"
+    elif any(k in p for k in ["rsi", "macd", "fib", "fibonacci", "technical"]):
+        strategy = "technical_pro"
+
+    risk_level = "medium"
+    if any(k in p for k in ["conserv", "bajo riesgo", "defens", "estable", "segur"]):
+        risk_level = "low"
+    elif any(k in p for k in ["agres", "alto riesgo", "ofens", "volatil", "apalanc"]):
+        risk_level = "high"
+
+    horizon = "medio"
+    if any(k in p for k in ["scalp", "intradia", "intradía", "corto", "rápido", "rapido"]):
+        horizon = "corto"
+    elif any(k in p for k in ["largo", "swing", "seman", "mensual", "tendencia larga"]):
+        horizon = "largo"
+
+    cfg = {
+        "strategy": strategy,
+        "symbol": normalized_symbol,
+        "executor": "paper",
+        "capital_allocation": round(safe_allocation, 4),
+        "allocation": round(safe_allocation, 4),
+        "risk_config": {"max_drawdown": 0.05},
+    }
+
+    if strategy == "ema_cross":
+        if horizon == "corto":
+            cfg.update({"fast_ema": 7, "slow_ema": 18})
+        elif horizon == "largo":
+            cfg.update({"fast_ema": 20, "slow_ema": 55})
+        else:
+            cfg.update({"fast_ema": 9, "slow_ema": 21})
+    elif strategy == "grid_trading":
+        cfg.update({"upper_limit": 70000, "lower_limit": 60000, "num_grids": 10})
+        if risk_level == "low":
+            cfg["num_grids"] = 14
+        elif risk_level == "high":
+            cfg["num_grids"] = 8
+    elif strategy == "paired_balanced":
+        cfg.update(
+            {
+                "allow_short": True,
+                "pair_symbol_a": normalized_symbol,
+                "pair_symbol_b": "ETH/USDT",
+                "pair_entry_z": 1.4,
+                "pair_exit_z": 0.25,
+                "pair_stop_loss_pct": 0.015,
+                "pair_take_profit_pct": 0.01,
+                "pair_profit_lock_pct": 0.004,
+                "pair_min_correlation": 0.35,
+            }
+        )
+        if risk_level == "low":
+            cfg["pair_entry_z"] = 1.6
+            cfg["pair_min_correlation"] = 0.45
+        elif risk_level == "high":
+            cfg["pair_entry_z"] = 1.2
+            cfg["pair_min_correlation"] = 0.25
+
+    if risk_level == "low":
+        cfg["risk_config"] = {"max_drawdown": 0.03}
+    elif risk_level == "high":
+        cfg["risk_config"] = {"max_drawdown": 0.08}
+
+    return {
+        "config": cfg,
+        "meta": {
+            "detected_strategy": strategy,
+            "risk_level": risk_level,
+            "horizon": horizon,
+            "source": "prompt",
+        },
+    }
+
+
 def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_trades: int) -> dict:
     since = datetime.utcnow() - timedelta(hours=lookback_hours)
     bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
@@ -835,26 +925,35 @@ async def get_hyperliquid_settings():
         "margin_used": 0.0,
         "exposure_notional": 0.0,
     }
+    testnet_snapshot_error = ""
     mainnet_snapshot = {
         "account_value": 0.0,
         "withdrawable": 0.0,
         "margin_used": 0.0,
         "exposure_notional": 0.0,
     }
+    mainnet_snapshot_error = ""
     if wallet_ok:
         try:
             testnet_snapshot = _public_account_snapshot(wallet, True)
-        except Exception:
-            pass
+        except Exception as e:
+            testnet_snapshot_error = str(e)
         try:
             mainnet_snapshot = _public_account_snapshot(wallet, False)
-        except Exception:
-            pass
+        except Exception as e:
+            mainnet_snapshot_error = str(e)
 
     mainnet_auth_ok = False
     mainnet_auth_error = ""
+    selected_env_auth_ok = False
+    selected_env_auth_error = ""
     if wallet_ok and key_ok:
         mainnet_auth_ok, mainnet_auth_error = await _check_private_auth(wallet, signing_key, False)
+        selected_env_auth_ok, selected_env_auth_error = await _check_private_auth(wallet, signing_key, use_testnet)
+
+    selected_env = "testnet" if use_testnet else "mainnet"
+    selected_snapshot = testnet_snapshot if use_testnet else mainnet_snapshot
+    selected_snapshot_error = testnet_snapshot_error if use_testnet else mainnet_snapshot_error
 
     return {
         "wallet_address": wallet,
@@ -862,10 +961,19 @@ async def get_hyperliquid_settings():
         "signing_key_present": bool(signing_key),
         "use_testnet": use_testnet,
         "checks": {
+            "selected_env": selected_env,
+            "selected_env_auth_ok": selected_env_auth_ok,
+            "selected_env_auth_error": selected_env_auth_error if not selected_env_auth_ok else "",
             "wallet_format_ok": wallet_ok,
             "signing_key_format_ok": key_ok,
             "mainnet_auth_ok": mainnet_auth_ok,
             "mainnet_auth_error": mainnet_auth_error if not mainnet_auth_ok else "",
+            "selected_env_account_value": selected_snapshot.get("account_value", 0.0),
+            "selected_env_withdrawable": selected_snapshot.get("withdrawable", 0.0),
+            "selected_env_margin_used": selected_snapshot.get("margin_used", 0.0),
+            "selected_env_margin_usage_pct": _margin_usage_pct(selected_snapshot),
+            "selected_env_exposure_notional": selected_snapshot.get("exposure_notional", 0.0),
+            "selected_env_account_error": selected_snapshot_error,
             "testnet_account_value": testnet_snapshot.get("account_value", 0.0),
             "testnet_withdrawable": testnet_snapshot.get("withdrawable", 0.0),
             "testnet_margin_used": testnet_snapshot.get("margin_used", 0.0),
@@ -904,7 +1012,9 @@ async def save_hyperliquid_settings(payload: dict = None):
 
     try:
         testnet_snapshot = _public_account_snapshot(wallet, True)
-    except Exception:
+        testnet_snapshot_error = ""
+    except Exception as e:
+        testnet_snapshot_error = str(e)
         testnet_snapshot = {
             "account_value": 0.0,
             "withdrawable": 0.0,
@@ -913,7 +1023,9 @@ async def save_hyperliquid_settings(payload: dict = None):
         }
     try:
         mainnet_snapshot = _public_account_snapshot(wallet, False)
-    except Exception:
+        mainnet_snapshot_error = ""
+    except Exception as e:
+        mainnet_snapshot_error = str(e)
         mainnet_snapshot = {
             "account_value": 0.0,
             "withdrawable": 0.0,
@@ -922,15 +1034,24 @@ async def save_hyperliquid_settings(payload: dict = None):
         }
 
     mainnet_auth_ok, _ = await _check_private_auth(wallet, signing_key, False)
+    selected_env = "testnet" if use_testnet else "mainnet"
+    selected_snapshot = testnet_snapshot if use_testnet else mainnet_snapshot
+    selected_snapshot_error = testnet_snapshot_error if use_testnet else mainnet_snapshot_error
 
     return {
         "saved": True,
         "wallet_masked": _mask_wallet(wallet),
         "use_testnet": use_testnet,
         "checks": {
-            "selected_env": "testnet" if use_testnet else "mainnet",
+            "selected_env": selected_env,
             "selected_env_auth_ok": selected_auth_ok,
             "selected_env_auth_error": selected_auth_error if not selected_auth_ok else "",
+            "selected_env_account_value": selected_snapshot.get("account_value", 0.0),
+            "selected_env_withdrawable": selected_snapshot.get("withdrawable", 0.0),
+            "selected_env_margin_used": selected_snapshot.get("margin_used", 0.0),
+            "selected_env_margin_usage_pct": _margin_usage_pct(selected_snapshot),
+            "selected_env_exposure_notional": selected_snapshot.get("exposure_notional", 0.0),
+            "selected_env_account_error": selected_snapshot_error,
             "testnet_account_value": testnet_snapshot.get("account_value", 0.0),
             "testnet_withdrawable": testnet_snapshot.get("withdrawable", 0.0),
             "testnet_margin_used": testnet_snapshot.get("margin_used", 0.0),
@@ -1705,6 +1826,15 @@ async def analyze_bot_options(payload: dict = None, db: Session = Depends(get_db
     symbol = payload.get("symbol", "BTC/USDT")
     allocation = payload.get("allocation", 500)
     return await build_bot_advice(db, symbol=symbol, allocation=allocation)
+
+
+@app.post("/api/bot-advisor/from-text")
+async def build_bot_from_text(payload: dict = None):
+    payload = payload or {}
+    prompt = str(payload.get("prompt") or "").strip()
+    symbol = str(payload.get("symbol") or "BTC/USDT").strip()
+    allocation = float(payload.get("allocation") or 500)
+    return _bot_config_from_prompt(prompt=prompt, symbol=symbol, allocation=allocation)
 
 
 @app.post("/api/bot-advisor/execute")
