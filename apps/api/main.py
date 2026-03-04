@@ -1843,6 +1843,7 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
     horizon = (payload.get("horizon") or "").strip().lower()
     symbol = payload.get("symbol", "BTC/USDT")
     allocation = payload.get("allocation", 500)
+    force_new = bool(payload.get("force_new", True))
 
     if horizon not in {"corto", "medio", "largo"}:
         raise HTTPException(status_code=400, detail="horizon must be one of: corto, medio, largo")
@@ -1852,7 +1853,7 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
     if not rec:
         raise HTTPException(status_code=404, detail="No recommendation available for selected horizon")
 
-    if rec.get("recommended_action") in {"tune_existing", "reduce_risk"} and rec.get("recommended_bot_id") and rec.get("edited_config"):
+    if (not force_new) and rec.get("recommended_action") in {"tune_existing", "reduce_risk"} and rec.get("recommended_bot_id") and rec.get("edited_config"):
         bot_id = rec.get("recommended_bot_id")
         success = bot_manager.update_bot_config(bot_id, rec.get("edited_config") or {})
         if not success:
@@ -1866,7 +1867,7 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
             "message": f"Bot {bot_id} updated using advisor recommendation ({rec.get('recommended_action')})",
         }
 
-    config = (rec.get("new_bot_config") or {}).copy()
+    config = (rec.get("new_bot_config") or rec.get("edited_config") or {}).copy()
     new_bot_id = f"advisor_{horizon}_{uuid.uuid4().hex[:6]}"
     config["id"] = new_bot_id
 

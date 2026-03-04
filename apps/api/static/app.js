@@ -1807,9 +1807,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         advisorResults.innerHTML = marketSummary + recommendations.map((item) => {
             const actionLabel = item.recommended_action === 'tune_existing'
-                ? `Editar y usar ${item.recommended_bot_id || 'bot existente'}`
+                ? `Base recomendada: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
                 : item.recommended_action === 'reduce_risk'
-                    ? `Reducir riesgo en ${item.recommended_bot_id || 'bot existente'} (prioridad defensiva)`
+                    ? `Base defensiva: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
                     : `Crear bot nuevo (${item.new_bot_preset_name || 'preset'})`;
 
             return `
@@ -1820,6 +1820,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:6px;">${actionLabel}</div>
                     <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:8px;">${item.reason || ''}</div>
+                    <div style="font-size:0.70rem; color:var(--text-muted); margin-bottom:8px;">Crear bot ahora / Auto-ejecutar siempre crean un bot NUEVO.</div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px;">
                         <button class="advisor-apply-btn" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-blue); color:var(--accent-blue); background:transparent; border-radius:8px; cursor:pointer;">Usar en formulario</button>
                         <button class="advisor-create-btn" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-emerald); color:var(--accent-emerald); background:transparent; border-radius:8px; cursor:pointer;">Crear bot ahora</button>
@@ -2637,29 +2638,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const rec = advisorMap[horizon];
             if (!rec) return;
 
-            const useExistingConfig = rec.recommended_action === 'tune_existing' || rec.recommended_action === 'reduce_risk';
-            const configToCreate = useExistingConfig ? rec.edited_config : rec.new_bot_config;
+            const configToCreate = rec.new_bot_config || rec.edited_config;
             if (!configToCreate) return;
-
-            if (useExistingConfig && rec.recommended_bot_id) {
-                try {
-                    const response = await fetch(`/api/bots/${rec.recommended_bot_id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(configToCreate)
-                    });
-                    if (!response.ok) {
-                        const err = await response.json();
-                        alert('No se pudo actualizar el bot recomendado: ' + (err.detail || 'Error desconocido'));
-                    } else {
-                        fetchBots();
-                        alert(`Bot actualizado: ${rec.recommended_bot_id}`);
-                    }
-                } catch (error) {
-                    console.error('Advisor update bot error:', error);
-                }
-                return;
-            }
 
             const baseId = document.getElementById('newBotId')?.value?.trim() || `Bot-${horizon}`;
             const uniqueId = `${baseId}-${Math.floor(Math.random() * 10000)}`;
@@ -2700,7 +2680,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/api/bot-advisor/execute', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ horizon, symbol, allocation })
+                    body: JSON.stringify({ horizon, symbol, allocation, force_new: true })
                 });
 
                 if (!response.ok) {
