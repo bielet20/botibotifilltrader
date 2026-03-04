@@ -5,6 +5,7 @@
 
 # Local databases and runtime state
 trading.db
+trading_runtime.db
 *.sqlite3
 
 # Python artifacts
@@ -29,6 +30,7 @@ reports/*.csv
 reports/*.json
 reports/*.jsonl
 reports/*.pdf
+reports/*.lock
 reports/imported_market_data/
 
 # Editors
