@@ -181,6 +181,35 @@ def _pick_preset_for_horizon(horizon: str, symbol: str):
     return get_bot_preset(preset_id), preset_id
 
 
+def _normalize_symbol(symbol: str) -> str:
+    raw = str(symbol or "").strip().upper()
+    if not raw:
+        return ""
+    if ":" in raw:
+        raw = raw.split(":", 1)[0]
+    if raw.endswith("/USDC"):
+        return raw.replace("/USDC", "/USDT")
+    return raw
+
+
+def _bot_matches_symbol(bot: BotDB, target_symbol: str) -> bool:
+    cfg = dict(bot.config or {})
+    target = _normalize_symbol(target_symbol)
+    if not target:
+        return True
+
+    candidates = {
+        _normalize_symbol(cfg.get("symbol") or ""),
+        _normalize_symbol(cfg.get("pair_symbol_a") or ""),
+        _normalize_symbol(cfg.get("pair_symbol_b") or ""),
+    }
+    candidates.discard("")
+
+    if not candidates:
+        return True
+    return target in candidates
+
+
 def _detect_market_regime(ohlcv: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not ohlcv or len(ohlcv) < 12:
         return {
@@ -316,6 +345,18 @@ async def build_bot_advice(db, symbol: str, allocation: float) -> Dict[str, Any]
             pass
 
     bots: List[BotDB] = db.query(BotDB).filter(BotDB.is_archived == False).all()
+    symbol_filtered = [bot for bot in bots if _bot_matches_symbol(bot, symbol)]
+    non_advisor_filtered = [
+        bot for bot in symbol_filtered
+        if not str(bot.id or "").lower().startswith("advisor_")
+    ]
+
+    if non_advisor_filtered:
+        candidate_bots = non_advisor_filtered
+    elif symbol_filtered:
+        candidate_bots = symbol_filtered
+    else:
+        candidate_bots = bots
 
     horizons = ["corto", "medio", "largo"]
     recommendations: List[Dict[str, Any]] = []
@@ -324,7 +365,7 @@ async def build_bot_advice(db, symbol: str, allocation: float) -> Dict[str, Any]
         best_bot = None
         best_score = -10_000.0
 
-        for bot in bots:
+        for bot in candidate_bots:
             metrics = _get_bot_metrics(db, bot.id)
             score = _score_bot_for_horizon(bot, metrics, horizon, market_context)
             if score > best_score:

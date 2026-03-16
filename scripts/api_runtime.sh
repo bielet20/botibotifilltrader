@@ -39,20 +39,35 @@ start_api() {
   pkill -f "uvicorn apps.api.main:app --host ${API_HOST} --port ${API_PORT}" >/dev/null 2>&1 || true
 
   echo "🚀 Iniciando API en background..."
-  DATABASE_URL="$DATABASE_URL_VALUE" PYTHONPATH=. "$PYTHON_BIN" -m uvicorn apps.api.main:app --host "$API_HOST" --port "$API_PORT" > "$API_LOG" 2>&1 &
+  DATABASE_URL="$DATABASE_URL_VALUE" PYTHONPATH=. PYDANTIC_DISABLE_PLUGINS="__all__" "$PYTHON_BIN" -m uvicorn apps.api.main:app --host "$API_HOST" --port "$API_PORT" > "$API_LOG" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
 
-  sleep 2
-  if api_health; then
-    echo "✅ API arriba (${API_URL}) · pid=${pid}"
-    echo "📝 Log: ${API_LOG}"
-    return 0
-  fi
+  # Startup may take longer when resuming bots/guards on cold boot.
+  local retries=180
+  local i=1
+  while [[ $i -le $retries ]]; do
+    if api_health; then
+      echo "✅ API arriba (${API_URL}) · pid=${pid}"
+      echo "📝 Log: ${API_LOG}"
+      return 0
+    fi
 
-  echo "❌ La API no respondió después de iniciar."
+    # Fail fast if the process crashed before becoming healthy.
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "❌ Proceso API finalizó antes de estar saludable (pid=${pid})."
+      echo "📝 Últimas líneas de log:"
+      tail -n 120 "$API_LOG" || true
+      exit 1
+    fi
+
+    sleep 1
+    i=$((i + 1))
+  done
+
+  echo "❌ La API no respondió después de iniciar (timeout ${retries}s)."
   echo "📝 Últimas líneas de log:"
-  tail -n 80 "$API_LOG" || true
+  tail -n 120 "$API_LOG" || true
   exit 1
 }
 

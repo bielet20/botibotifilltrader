@@ -30,6 +30,8 @@ class ProductionGuardService:
             self._task.cancel()
             try:
                 await self._task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
 
@@ -51,12 +53,20 @@ class ProductionGuardService:
             "min_trades": int(policy.get("min_trades", 8)),
             "min_win_rate": float(policy.get("min_win_rate", 50.0)),
             "min_net_pnl": float(policy.get("min_net_pnl", 0.0)),
+            "min_profit_factor": float(policy.get("min_profit_factor", 1.02)),
             "max_consecutive_losses": int(policy.get("max_consecutive_losses", 2)),
             "max_loss_abs": float(policy.get("max_loss_abs", 5.0)),
             "max_loss_pct_of_allocation": float(policy.get("max_loss_pct_of_allocation", 0.01)),
             "capital_allocation": capital_allocation,
             "stop_on_unproductive": bool(policy.get("stop_on_unproductive", True)),
         }
+
+    def _is_live_mainnet(self, bot: BotDB) -> bool:
+        cfg = dict(bot.config or {})
+        executor = str(cfg.get("executor") or "paper").strip().lower()
+        if executor != "hyperliquid":
+            return False
+        return not bool(cfg.get("hyperliquid_testnet", True))
 
     def _calc_metrics(self, trades: List[TradeDB]) -> Dict[str, Any]:
         total = len(trades)
@@ -65,12 +75,16 @@ class ProductionGuardService:
                 "trade_count": 0,
                 "win_rate": 0.0,
                 "net_pnl": 0.0,
+                "profit_factor": 0.0,
                 "consecutive_losses": 0,
                 "last_trade_at": None,
             }
 
         wins = sum(1 for t in trades if (t.pnl or 0) > 0)
         net_pnl = sum((t.pnl or 0) - (t.fee or 0) for t in trades)
+        gross_profit = sum(max(float(t.pnl or 0), 0.0) for t in trades)
+        gross_loss = sum(abs(min(float(t.pnl or 0), 0.0)) for t in trades)
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
 
         consecutive_losses = 0
         for trade in trades:
@@ -83,6 +97,7 @@ class ProductionGuardService:
             "trade_count": total,
             "win_rate": round((wins / total) * 100, 2),
             "net_pnl": round(net_pnl, 4),
+            "profit_factor": round(profit_factor, 4),
             "consecutive_losses": consecutive_losses,
             "last_trade_at": trades[0].time.isoformat() if trades and trades[0].time else None,
         }
@@ -129,6 +144,9 @@ class ProductionGuardService:
             running_bots = db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).all()
 
             for bot in running_bots:
+                if not self._is_live_mainnet(bot):
+                    continue
+
                 policy = self._policy(bot)
                 if not policy["enabled"]:
                     continue
@@ -172,6 +190,7 @@ class ProductionGuardService:
                     else:
                         low_win = metrics["win_rate"] < policy["min_win_rate"]
                         low_pnl = metrics["net_pnl"] < policy["min_net_pnl"]
+                        low_pf = float(metrics.get("profit_factor") or 0.0) < float(policy.get("min_profit_factor") or 0.0)
 
                         if low_win and low_pnl:
                             decision = "stop" if policy["stop_on_unproductive"] else "warn"
@@ -180,6 +199,17 @@ class ProductionGuardService:
                                 f"Baja productividad multifactor: win_rate {metrics['win_rate']}% < {policy['min_win_rate']}% "
                                 f"y net_pnl {metrics['net_pnl']} < {policy['min_net_pnl']}"
                             )
+                        elif low_pf and low_pnl:
+                            decision = "stop" if policy["stop_on_unproductive"] else "warn"
+                            reason_code = "low_profit_factor"
+                            reason_msg = (
+                                f"Ratio beneficio bajo: profit_factor {metrics['profit_factor']} < {policy['min_profit_factor']} "
+                                f"con net_pnl {metrics['net_pnl']} < {policy['min_net_pnl']}"
+                            )
+                        elif low_pf:
+                            decision = "warn"
+                            reason_code = "low_profit_factor"
+                            reason_msg = f"Profit factor bajo: {metrics['profit_factor']} < {policy['min_profit_factor']}"
                         elif low_win:
                             decision = "warn"
                             reason_code = "low_win_rate"

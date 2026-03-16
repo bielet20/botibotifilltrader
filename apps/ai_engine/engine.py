@@ -42,3 +42,31 @@ class AIEngine:
         return {
             "suggested_changes": {"ema_window": 20, "take_profit": 0.05}
         }
+
+    async def evaluate_take_profit(self, position_context: dict) -> dict:
+        """Rule-based AI take-profit evaluator with dynamic thresholding."""
+        profit_pct = float(position_context.get("profit_pct") or 0.0)
+        unrealized_pnl = float(position_context.get("unrealized_pnl") or 0.0)
+        volatility_pct = abs(float(position_context.get("volatility_pct") or 0.0))
+        trend_strength = float(position_context.get("trend_strength") or 0.0)
+
+        min_profit_pct = max(0.001, float(position_context.get("min_profit_pct") or 0.006))
+        hard_take_profit_pct = max(min_profit_pct, float(position_context.get("hard_take_profit_pct") or 0.02))
+
+        dynamic_target = min(hard_take_profit_pct, max(min_profit_pct, min_profit_pct + (volatility_pct * 1.6)))
+        if trend_strength < 0:
+            dynamic_target = max(min_profit_pct * 0.7, dynamic_target * 0.85)
+
+        should_take_profit = unrealized_pnl > 0 and profit_pct >= dynamic_target
+        reason = (
+            f"profit_pct={profit_pct:.5f} >= target={dynamic_target:.5f}"
+            if should_take_profit
+            else f"profit_pct={profit_pct:.5f} < target={dynamic_target:.5f}"
+        )
+
+        return {
+            "should_take_profit": should_take_profit,
+            "target_profit_pct": round(dynamic_target, 6),
+            "reason": reason,
+            "source": "ai_rule_engine",
+        }

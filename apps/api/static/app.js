@@ -65,10 +65,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const newBotPrompt = document.getElementById('newBotPrompt');
     const generateBotFromTextBtn = document.getElementById('generateBotFromTextBtn');
     const botPromptStatus = document.getElementById('botPromptStatus');
-    const productionAlertsContent = document.getElementById('productionAlertsContent');
-    const refreshProductionAlerts = document.getElementById('refreshProductionAlerts');
-    const botQuotesContent = document.getElementById('botQuotesContent');
-    const refreshBotQuotesBtn = document.getElementById('refreshBotQuotesBtn');
+    const botFilterSearch = document.getElementById('botFilterSearch');
+    const botFilterStrategy = document.getElementById('botFilterStrategy');
+    const botFilterStatus = document.getElementById('botFilterStatus');
+    const compareSymbolAInput = document.getElementById('compareSymbolA');
+    const compareSymbolBInput = document.getElementById('compareSymbolB');
+    const comparePriceA = document.getElementById('comparePriceA');
+    const comparePriceB = document.getElementById('comparePriceB');
+    const compareResultA = document.getElementById('compareResultA');
+    const compareResultB = document.getElementById('compareResultB');
+    const compareLastUpdate = document.getElementById('compareLastUpdate');
     const refreshMainnetVisualBtn = document.getElementById('refreshMainnetVisualBtn');
     const mainnetVisualHeader = document.getElementById('mainnetVisualHeader');
     const mainnetVisualGrid = document.getElementById('mainnetVisualGrid');
@@ -94,9 +100,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshRuntimeOpsBtn = document.getElementById('refreshRuntimeOpsBtn');
     const startRuntimeOpsBtn = document.getElementById('startRuntimeOpsBtn');
     const stopRuntimeOpsBtn = document.getElementById('stopRuntimeOpsBtn');
+    const takeProfitAdaptiveStatus = document.getElementById('takeProfitAdaptiveStatus');
+    const refreshTakeProfitAdaptiveBtn = document.getElementById('refreshTakeProfitAdaptiveBtn');
+    const asset30dSymbol = document.getElementById('asset30dSymbol');
+    const asset30dTimeframe = document.getElementById('asset30dTimeframe');
+    const asset30dSource = document.getElementById('asset30dSource');
+    const asset30dAllocation = document.getElementById('asset30dAllocation');
+    const asset30dAnalyzeBtn = document.getElementById('asset30dAnalyzeBtn');
+    const asset30dRecommendBtn = document.getElementById('asset30dRecommendBtn');
+    const asset30dStatus = document.getElementById('asset30dStatus');
+    const asset30dMetrics = document.getElementById('asset30dMetrics');
+    const asset30dAdvisor = document.getElementById('asset30dAdvisor');
+    const microScalpSymbol = document.getElementById('microScalpSymbol');
+    const microScalpAllocation = document.getElementById('microScalpAllocation');
+    const microScalpCreateBtn = document.getElementById('microScalpCreateBtn');
+    const microScalpStatus = document.getElementById('microScalpStatus');
 
     let botPresets = [];
     let advisorMap = {};
+    let assetAdvisorMap = {};
 
     // Custom Confirmation Modal Elements
     const customConfirmModal = document.getElementById('customConfirmModal');
@@ -129,130 +151,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    let botVisibleFields = ['Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Acciones'];
-    const allBotFields = ['ID Bot', 'Nombre Bot', 'Estrategia', 'Estado', 'Asignación', 'PnL', 'Uptime', 'Tasa Éxito', 'Acciones'];
-
-    // Sidebar/Nav Toggle Logic for Mobile
-    if (menuToggle && sidebar) {
-        menuToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('active');
-            if (sidebarOverlay) sidebarOverlay.classList.toggle('active');
-        });
-    }
-
-    if (sidebarOverlay && sidebar) {
-        sidebarOverlay.addEventListener('click', () => {
-            sidebar.classList.remove('active');
-            sidebarOverlay.classList.remove('active');
-        });
-    }
-
-    // Strategy Parameter Visibility
-    const newBotStrategy = document.getElementById('newBotStrategy');
-    const emaParams = document.getElementById('emaParams');
-    if (newBotStrategy && emaParams) {
-        newBotStrategy.addEventListener('change', () => {
-            emaParams.style.display = newBotStrategy.value === 'ema_cross' ? 'block' : 'none';
-        });
-    }
-
-    // Resizable Dashboard Persistence
-    const resizableOverview = document.getElementById('resizableOverview');
-    if (resizableOverview) {
-        // Load saved dimensions
-        const savedWidth = localStorage.getItem('dashboard-overview-width');
-        const savedHeight = localStorage.getItem('dashboard-overview-height');
-
-        if (savedWidth) resizableOverview.style.width = savedWidth;
-        if (savedHeight) resizableOverview.style.height = savedHeight;
-
-        // Save dimensions on resize
-        const resizeObserver = new ResizeObserver(entries => {
-            for (let entry of entries) {
-                const { width, height } = entry.contentRect;
-                localStorage.setItem('dashboard-overview-width', width + 'px');
-                localStorage.setItem('dashboard-overview-height', height + 'px');
-
-                // Trigger chart resize if needed
-                if (window.performanceChart && typeof window.performanceChart.resize === 'function') {
-                    window.performanceChart.resize();
-                }
-            }
-        });
-        resizeObserver.observe(resizableOverview);
-    }
-
-    // Comparison Logic
-    let comparisonInterval = null;
-    const compareSymbolAInput = document.getElementById('compareSymbolA');
-    const compareSymbolBInput = document.getElementById('compareSymbolB');
-    const comparePriceAEl = document.getElementById('comparePriceA');
-    const comparePriceBEl = document.getElementById('comparePriceB');
-    const compareLastUpdateEl = document.getElementById('compareLastUpdate');
-
-    async function refreshComparisonPrices(showAlert = false) {
-        if (!compareSymbolAInput || !compareSymbolBInput || !comparePriceAEl || !comparePriceBEl) return;
-
-        const symA = compareSymbolAInput.value;
-        const symB = compareSymbolBInput.value;
-
-        try {
-            const response = await fetch('/api/market/compare', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol_a: symA, symbol_b: symB })
-            });
-
-            if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.detail || 'No se pudieron obtener precios reales');
-            }
-
-            const data = await response.json();
-            comparePriceAEl.innerText = `$${Number(data.price_a || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
-            comparePriceBEl.innerText = `$${Number(data.price_b || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
-            if (compareLastUpdateEl) {
-                const ts = data.timestamp ? new Date(data.timestamp) : new Date();
-                compareLastUpdateEl.innerText = `Última actualización: ${ts.toLocaleTimeString()}`;
-            }
-
-            if (showAlert) {
-                alert(`Análisis comparativo actualizado con precios reales (${data.source || 'market'}).`);
-            }
-        } catch (error) {
-            console.error('Comparison error:', error);
-            if (showAlert) {
-                alert('Error en análisis comparativo: ' + error.message);
-            }
-        }
-    }
-
-    function stopComparisonAutoRefresh() {
-        if (comparisonInterval) {
-            clearInterval(comparisonInterval);
-            comparisonInterval = null;
-        }
-    }
-
-    function normalizeSymbolForMarketData(symbol) {
-        const raw = String(symbol || '').trim();
-        if (!raw) return 'BTC/USDT';
-
-        if (raw.includes('/USDC:USDC')) {
-            return raw.replace('/USDC:USDC', '/USDT');
-        }
-
-        if (raw.includes(':')) {
-            return raw.split(':')[0];
-        }
-
-        return raw;
-    }
-
     function choosePriceDecimals(price) {
-        if (price >= 10000) return 0;
-        if (price >= 1000) return 1;
-        if (price >= 100) return 2;
+        if (!Number.isFinite(price) || price <= 0) return 6;
+        if (price >= 1000) return 2;
+        if (price >= 100) return 3;
         if (price >= 1) return 4;
         return 6;
     }
@@ -360,6 +262,86 @@ document.addEventListener('DOMContentLoaded', () => {
             return { color: 'var(--accent-blue)', label: 'RIESGO MEDIO' };
         }
         return { color: 'var(--accent-emerald)', label: 'RIESGO BAJO' };
+    }
+
+    let comparisonInterval = null;
+
+    function stopComparisonAutoRefresh() {
+        if (comparisonInterval) {
+            clearInterval(comparisonInterval);
+            comparisonInterval = null;
+        }
+    }
+
+    async function fetchComparisonPrice(symbol) {
+        const response = await fetch('/api/market/data/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                symbol,
+                timeframe: '1m',
+                source: 'live',
+                limit: 2,
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `No se pudo obtener precio para ${symbol}`);
+        }
+
+        const payload = await response.json();
+        const candles = Array.isArray(payload.candles) ? payload.candles : [];
+        const lastClose = Number(candles.at(-1)?.close);
+        if (!Number.isFinite(lastClose) || lastClose <= 0) {
+            throw new Error(`Sin precio válido para ${symbol}`);
+        }
+
+        return {
+            price: lastClose,
+            source: payload.source || 'live',
+        };
+    }
+
+    async function refreshComparisonPrices(showAlerts = false) {
+        if (!compareSymbolAInput || !compareSymbolBInput) return;
+
+        const symbolA = (compareSymbolAInput.value || 'BTC/USDT').trim().toUpperCase();
+        const symbolB = (compareSymbolBInput.value || 'ETH/USDT').trim().toUpperCase();
+
+        const updateBox = (target, color, text) => {
+            if (!target) return;
+            target.style.borderColor = color;
+            const stat = target.querySelector('.stat-subtitle');
+            if (stat) stat.textContent = text;
+        };
+
+        try {
+            const [a, b] = await Promise.all([
+                fetchComparisonPrice(symbolA),
+                fetchComparisonPrice(symbolB)
+            ]);
+
+            if (comparePriceA) comparePriceA.textContent = a.price.toFixed(4);
+            if (comparePriceB) comparePriceB.textContent = b.price.toFixed(4);
+
+            updateBox(compareResultA, 'rgba(56,189,248,0.55)', `${symbolA} · ${a.source}`);
+            updateBox(compareResultB, 'rgba(16,185,129,0.55)', `${symbolB} · ${b.source}`);
+
+            if (compareLastUpdate) {
+                compareLastUpdate.textContent = `Última actualización: ${new Date().toLocaleTimeString()}`;
+            }
+        } catch (error) {
+            console.error('Comparison refresh error:', error);
+            if (compareLastUpdate) {
+                compareLastUpdate.textContent = `Última actualización: error (${error.message})`;
+            }
+            updateBox(compareResultA, 'rgba(239,68,68,0.45)', 'Error de actualización');
+            updateBox(compareResultB, 'rgba(239,68,68,0.45)', 'Error de actualización');
+            if (showAlerts) {
+                alert(`No se pudo actualizar comparación: ${error.message}`);
+            }
+        }
     }
 
     function startComparisonAutoRefresh() {
@@ -559,18 +541,75 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderTakeProfitAdaptiveStatus(tpStatus) {
+        if (!takeProfitAdaptiveStatus) return;
+
+        const profile = String(tpStatus?.profile || 'manual').toUpperCase();
+        const profileColor = profile === 'AUTO' ? 'var(--accent-emerald)' : 'var(--accent-blue)';
+        const trackedCount = Number(tpStatus?.tracked_count || 0);
+        const orchestratorRunning = !!tpStatus?.orchestrator_running;
+        const tracked = Array.isArray(tpStatus?.tracked_positions) ? tpStatus.tracked_positions : [];
+        const updatedAt = tpStatus?.timestamp ? new Date(tpStatus.timestamp).toLocaleTimeString() : '-';
+
+        const topTracked = tracked.slice(0, 3).map((p) => {
+            const gain = Number(p.last_gain_pct || 0);
+            const retrace = Number(p.last_retrace_pct || 0);
+            const gainColor = gain >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            return `<div style="margin-top:4px;">• ${p.symbol || '-'} · ${p.side || '-'} · peak ${(Number(p.peak_gain_pct || 0) * 100).toFixed(2)}% · gain <span style="color:${gainColor};">${(gain * 100).toFixed(2)}%</span> · retrace ${(retrace * 100).toFixed(2)}%</div>`;
+        }).join('');
+
+        const stateInfo = tpStatus?.state_exists
+            ? `state: ${tpStatus?.state_file || '-'} (${trackedCount} posiciones monitorizadas)`
+            : `state: ${tpStatus?.state_file || '-'} (sin archivo aún)`;
+
+        const readError = tpStatus?.state_read_error
+            ? `<div style="margin-top:6px; color: var(--accent-ruby);">Error leyendo estado: ${tpStatus.state_read_error}</div>`
+            : '';
+
+        takeProfitAdaptiveStatus.innerHTML = [
+            `<div><strong>Perfil activo:</strong> <span style="color:${profileColor}; font-weight:700;">${profile}</span> · Orquestador ${orchestratorRunning ? 'ON' : 'OFF'}</div>`,
+            `<div style="margin-top:4px;"><strong>Thresholds:</strong> minNet $${Number(tpStatus?.min_net_pnl || 0).toFixed(2)} · hardTP ${(Number(tpStatus?.hard_take_profit_pct || 0) * 100).toFixed(2)}% · trigger ${(Number(tpStatus?.trailing_trigger_pct || 0) * 100).toFixed(2)}% · retrace ${(Number(tpStatus?.trailing_retrace_pct || 0) * 100).toFixed(2)}% · stopLoss ${(Number(tpStatus?.stop_loss_pct || 0) * 100).toFixed(2)}% · maxNetLoss $${Number(tpStatus?.max_net_loss_abs || 0).toFixed(2)}</div>`,
+            `<div style="margin-top:4px;"><strong>Volatilidad:</strong> tf ${tpStatus?.volatility_timeframe || '-'} · lookback ${tpStatus?.volatility_lookback || '-'} · low ${(Number(tpStatus?.volatility_low_threshold_pct || 0) * 100).toFixed(3)}% · high ${(Number(tpStatus?.volatility_high_threshold_pct || 0) * 100).toFixed(3)}%</div>`,
+            `<div style="margin-top:4px;"><strong>Ladder:</strong> ${tpStatus?.trailing_ladder || '-'}</div>`,
+            `<div style="margin-top:4px;"><strong>Estado guard:</strong> ${stateInfo}</div>`,
+            `<div style="margin-top:4px;"><strong>Top monitorizadas:</strong>${topTracked || '<div style="margin-top:4px; color: var(--text-muted);">Sin posiciones en state aún.</div>'}</div>`,
+            `<div style="margin-top:6px; color: var(--text-muted);">Actualizado: ${updatedAt}</div>`,
+            readError,
+        ].join('');
+    }
+
+    async function loadTakeProfitAdaptiveStatus() {
+        if (!takeProfitAdaptiveStatus) return;
+        takeProfitAdaptiveStatus.textContent = 'Estado: consultando take profit adaptativo...';
+        try {
+            const res = await fetch('/api/take-profit/status', { cache: 'no-store' });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'No se pudo consultar estado de take profit');
+            }
+            const data = await res.json();
+            renderTakeProfitAdaptiveStatus(data);
+        } catch (error) {
+            console.error('Error loading take profit adaptive status:', error);
+            takeProfitAdaptiveStatus.textContent = 'Error consultando take profit adaptativo: ' + error.message;
+        }
+    }
+
     async function loadMainnetVisualControl() {
         if (!mainnetVisualHeader || !mainnetVisualGrid || !mainnetVisualDetail) return;
 
         mainnetVisualHeader.textContent = 'Cargando estado de producción...';
         try {
+            const reqOpts = { cache: 'no-store' };
+            const ts = Date.now();
             const [settingsRes, prodStatusRes, positionsRes, botsRes, alertsRes, runtimeRes] = await Promise.all([
-                fetch('/api/settings/hyperliquid'),
-                fetch('/api/production/status'),
-                fetch('/api/positions?sync=true'),
-                fetch('/api/bots'),
-                fetch('/api/production/alerts?limit=20&only_open=true'),
-                fetch('/api/autotrader/orchestrator/status')
+                fetch('/api/settings/hyperliquid', reqOpts),
+                fetch('/api/production/status', reqOpts),
+                // Keep UI responsive by reading cached positions first.
+                fetch(`/api/positions?sync=false&_ts=${ts}`, reqOpts),
+                fetch('/api/bots', reqOpts),
+                fetch('/api/production/alerts?limit=20&only_open=true', reqOpts),
+                fetch('/api/autotrader/orchestrator/status', reqOpts)
             ]);
 
             if (!settingsRes.ok || !prodStatusRes.ok || !positionsRes.ok || !botsRes.ok || !alertsRes.ok || !runtimeRes.ok) {
@@ -583,6 +622,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const bots = await botsRes.json();
             const alerts = await alertsRes.json();
             const runtime = await runtimeRes.json();
+
+            // Trigger exchange sync in background without blocking this render cycle.
+            fetch(`/api/positions?sync=true&_ts=${ts}`, reqOpts).catch((syncError) => {
+                console.warn('Background positions sync failed:', syncError);
+            });
 
             const checks = settings?.checks || {};
             const selectedEnv = String(checks.selected_env || (settings?.use_testnet ? 'testnet' : 'mainnet')).toLowerCase();
@@ -623,7 +667,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 : [];
             const runningLiveBots = liveBots.filter((b) => String(b.status || '').toLowerCase() === 'running');
 
-            const positionsCount = Array.isArray(positions) ? positions.length : 0;
+            const rawPositionsCount = Array.isArray(positions) ? positions.length : 0;
+            const inferredOpenByExposure = selectedEnv === 'mainnet' && exposureNotional > 0 && rawPositionsCount === 0;
+            const positionsCount = inferredOpenByExposure ? 1 : rawPositionsCount;
             const guardCount = Number(prodStatus?.count || 0);
             const runtimeRunning = !!runtime?.running;
             const noOpenPositions = positionsCount === 0;
@@ -663,12 +709,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(250,204,21,0.55); border-radius:8px; color:#facc15; font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Sin posiciones abiertas en ${selectedEnvLabel}</div>`
                 : `<div style="margin-top:8px; padding:8px 10px; border:1px solid rgba(16,185,129,0.45); border-radius:8px; color:var(--accent-emerald); font-weight:700; text-transform:uppercase; letter-spacing:.03em;">${selectedEnvLabel} con posiciones activas</div>`;
 
+            const inferredHint = inferredOpenByExposure
+                ? '<div style="margin-top:6px; color:#facc15; font-size:0.72rem;">Posicion detectada por exposicion mainnet. Sincronizacion local en curso.</div>'
+                : '';
+
             mainnetVisualDetail.innerHTML = `
                 <div style="margin-bottom:4px;"><strong>Bots live:</strong> ${runningLiveBots.length}/${liveBots.length} running · hyperliquid ${selectedEnvLabel.toLowerCase()}</div>
                 <div style="margin-bottom:4px;"><strong>Uso de margen:</strong> <span style="color:${riskMeta.color}; font-weight:700;">${marginUsagePct.toFixed(2)}% (${riskMeta.label})</span> del equity</div>
                 <div><strong>Última alerta:</strong> ${latestAlertText}</div>
                 ${noPositionsBadge}
-                <div style="margin-top:6px;"><strong>Top posiciones:</strong>${positionRows || '<div style="margin-top:4px; color: var(--text-muted);">Sin posiciones abiertas en exchange.</div>'}</div>
+                ${inferredHint}
+                <div style="margin-top:6px;"><strong>Top posiciones:</strong>${positionRows || '<div style="margin-top:4px; color: var(--text-muted);">Sin detalle de posiciones (reintentando sync).</div>'}</div>
             `;
         } catch (error) {
             console.error('Error loading mainnet visual control:', error);
@@ -709,8 +760,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lookback_hours: 24,
-                    min_scored_trades: 12,
-                    top_n: 2
+                    min_scored_trades: 8,
+                    top_n: 10,
+                    require_runtime_ready: false,
+                    max_last_trade_age_hours: 24,
+                    auto_patch_executor: true
                 })
             });
 
@@ -726,7 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let autoSummary = 'Autoactivación: sin respuesta';
             if (autoActivateResp.ok) {
                 const autoData = await autoActivateResp.json();
-                autoSummary = `Autoactivación producción: ${autoData.activated || 0} activados, ${autoData.blocked || 0} bloqueados, ${autoData.production_candidates_detected || 0} preparados detectados`;
+                autoSummary = `Autoactivación producción: ${autoData.activated || 0} activados, ${autoData.blocked || 0} bloqueados, ${autoData.production_candidates_detected || 0} preparados detectados, ${autoData.skipped_not_running || 0} omitidos por no running, ${autoData.skipped_stale_trade || 0} omitidos por inactividad`;
             } else {
                 let errDetail = '';
                 try {
@@ -909,6 +963,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (targetId === 'overview') {
                 loadMainnetVisualControl();
+                fetchTestInsights();
             }
 
             // Close sidebar on mobile after navigation
@@ -1136,6 +1191,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let performanceChart;
     let backtestChart;
     let assetDataChart;
+    let asset30dChart;
     let portfolioSparkline;
     let pnlSparkline;
     const dashboardState = {
@@ -1326,18 +1382,45 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     async function fetchBots() {
         try {
-            const response = await fetch('/api/bots');
+            const response = await fetch('/api/bots?include_system=false');
             const bots = await response.json();
 
+            const isSystemManagedBot = (bot) => {
+                const cfg = bot?.config || {};
+                const managedBy = String(cfg.managed_by || '').trim().toLowerCase();
+                const botId = String(bot?.id || '').trim().toUpperCase();
+                return managedBy === 'adaptive_orchestrator' || botId.startsWith('AUTO-ADAPT-');
+            };
+
             const activeBots = bots
-                .filter(b => !b.is_archived)
+                .filter(b => !b.is_archived && !isSystemManagedBot(b))
                 .sort((a, b) => {
                     const aRunning = a.status === 'running' ? 1 : 0;
                     const bRunning = b.status === 'running' ? 1 : 0;
                     if (aRunning !== bRunning) return bRunning - aRunning;
                     return (a.id || '').localeCompare(b.id || '');
                 });
-            const archivedBots = bots.filter(b => b.is_archived);
+            const archivedBots = bots.filter(b => b.is_archived && !isSystemManagedBot(b));
+            const filteredActiveBots = activeBots.filter((bot) => {
+                const searchTerm = String(botFilterSearch?.value || '').trim().toLowerCase();
+                const strategyFilter = String(botFilterStrategy?.value || '').trim().toLowerCase();
+                const statusFilter = String(botFilterStatus?.value || '').trim().toLowerCase();
+
+                const botId = String(bot.id || '').toLowerCase();
+                const botName = String((bot.id || '').split('_')[0] || '').toLowerCase();
+                const botSymbol = String((bot.config || {}).symbol || bot.symbol || '').toLowerCase();
+                const botStrategy = String(bot.strategy || '').toLowerCase();
+                const botStatus = String(bot.status || '').toLowerCase();
+
+                const matchesSearch = !searchTerm
+                    || botId.includes(searchTerm)
+                    || botName.includes(searchTerm)
+                    || botSymbol.includes(searchTerm);
+                const matchesStrategy = !strategyFilter || botStrategy === strategyFilter;
+                const matchesStatus = !statusFilter || (statusFilter === 'running' ? botStatus === 'running' : botStatus !== 'running');
+
+                return matchesSearch && matchesStrategy && matchesStatus;
+            });
 
             const botManagerInfo = document.getElementById('botManagerInfo');
             const vaultManagerInfo = document.getElementById('vaultManagerInfo');
@@ -1350,13 +1433,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     .slice(0, 3)
                     .join(', ');
                 const activeTail = activeBots.filter(b => b.status === 'running').length > 3 ? '…' : '';
-                botManagerInfo.textContent = `${activeBots.length} bots · ${runningCount} ACTIVOS · ${waitingCount} EN ESPERA${activeIds ? ` · Activos ahora: ${activeIds}${activeTail}` : ''}`;
+                botManagerInfo.textContent = `${filteredActiveBots.length} filtrados de ${activeBots.length} · ${runningCount} ACTIVOS · ${waitingCount} EN ESPERA${activeIds ? ` · Activos ahora: ${activeIds}${activeTail}` : ''}`;
             }
             if (vaultManagerInfo) {
                 vaultManagerInfo.textContent = `${archivedBots.length} bots archivados en cápsula`;
             }
 
-            updateBotTable(activeBots);
+            updateBotTable(filteredActiveBots);
             updateVaultTable(archivedBots);
         } catch (error) {
             console.error('Error fetching bots:', error);
@@ -1431,7 +1514,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${uptimeText}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${successRate}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: right;">
-                    <button class="glass bot-action" data-id="${bot.id}" data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="padding: 5px; color: ${bot.status === 'running' ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; cursor: pointer; border: none;" title="${bot.status === 'running' ? 'Stop Bot' : 'Start Bot'}">
+                    <button class="glass bot-action" data-id="${bot.id}" data-running="${bot.status === 'running' ? 'true' : 'false'}" data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="padding: 5px; color: ${bot.status === 'running' ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; cursor: pointer; border: none;" title="${bot.status === 'running' ? 'Stop Bot' : 'Start Bot'}">
                         <i data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="width: 16px; height: 16px;"></i>
                     </button>
                     <button class="glass edit-bot-btn" data-id="${bot.id}" style="padding: 5px; color: var(--accent-blue); cursor: pointer; border: none;" title="Edit Config">
@@ -1517,7 +1600,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Kill Switch Interaction
-    killSwitchBtn.addEventListener('click', async () => {
+    if (killSwitchBtn) {
+        killSwitchBtn.addEventListener('click', async () => {
         const confirmed = confirm('⚠️ WARNING: This will immediately halt all active bots and trading processes. Do you want to proceed?');
 
         if (confirmed) {
@@ -1538,7 +1622,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('Failed to trigger kill switch. Please check connection.');
             }
         }
-    });
+        });
+    }
 
     // Fetch and Update Trade List
     async function fetchTrades() {
@@ -1720,6 +1805,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (executorSelect) executorSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
+    function resetBotFilters() {
+        if (botFilterSearch) botFilterSearch.value = '';
+        if (botFilterStrategy) botFilterStrategy.value = '';
+        if (botFilterStatus) botFilterStatus.value = '';
+        fetchBots();
+    }
+
+    function openTab(targetId) {
+        const targetLink = Array.from(navLinks || []).find(link => link.dataset.tab === targetId);
+        if (targetLink) targetLink.click();
+    }
+
     async function generateBotParamsFromPrompt() {
         if (!generateBotFromTextBtn || !newBotPrompt) return;
 
@@ -1831,6 +1928,385 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     }
 
+    function renderAsset30dMetrics(payload) {
+        if (!asset30dMetrics) return;
+        const analysis = payload?.analysis || {};
+        const rows = payload?.rows || 0;
+        const metrics = [
+            { label: 'Trend 30d', value: `${Number(analysis.trend_pct || 0).toFixed(2)}%` },
+            { label: 'Volatilidad', value: `${Number(analysis.volatility_pct || 0).toFixed(2)}%` },
+            { label: 'Max Drawdown', value: `${Number(analysis.max_drawdown_pct || 0).toFixed(2)}%` },
+            { label: 'Rango', value: `${Number(analysis.range_pct || 0).toFixed(2)}%` },
+            { label: 'Avg Vol', value: Number(analysis.avg_volume || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+            { label: 'Ultimo Close', value: Number(analysis.last_close || 0).toLocaleString(undefined, { maximumFractionDigits: 6 }) },
+        ];
+
+        asset30dMetrics.innerHTML = metrics.map((item) => `
+            <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);">
+                <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">${item.label}</div>
+                <div style="font-size:0.9rem; font-weight:700; color: var(--text-secondary); margin-top:4px;">${item.value}</div>
+                <div style="font-size:0.64rem; color: var(--text-muted); margin-top:4px;">velas ${rows}</div>
+            </div>
+        `).join('');
+    }
+
+    function renderAsset30dChart(payload) {
+        const canvas = document.getElementById('asset30dChart');
+        if (!canvas || !payload?.candles?.length) return;
+
+        const ctx = canvas.getContext('2d');
+        if (asset30dChart) asset30dChart.destroy();
+
+        const labels = payload.candles.map((c) => new Date(c.time).toLocaleString());
+        const prices = payload.candles.map((c) => c.close);
+
+        asset30dChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: `${payload.symbol} close`,
+                    data: prices,
+                    borderColor: '#60a5fa',
+                    backgroundColor: 'rgba(96, 165, 250, 0.12)',
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 0,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { ticks: { color: 'rgba(255,255,255,0.5)', maxRotation: 45, minRotation: 45 } },
+                    y: { ticks: { color: 'rgba(255,255,255,0.5)' } }
+                }
+            }
+        });
+    }
+
+    function renderAssetAdvisorResults(data) {
+        if (!asset30dAdvisor) return;
+        const recommendations = data?.recommendations || [];
+        const marketContext = data?.market_context || {};
+        assetAdvisorMap = {};
+
+        if (!recommendations.length) {
+            asset30dAdvisor.style.display = 'block';
+            asset30dAdvisor.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
+            return;
+        }
+
+        recommendations.forEach((item) => {
+            assetAdvisorMap[item.horizon] = item;
+        });
+
+        const marketSummary = `
+            <div style="margin-bottom:8px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.02);">
+                <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">Contexto de mercado</div>
+                <div style="font-size:0.8rem; color:var(--text-secondary); margin-top:4px;">
+                    Regimen: <strong style="color:var(--accent-blue);">${marketContext.regime || 'mixto'}</strong> ·
+                    Volatilidad: <strong>${marketContext.volatility_pct ?? 0}%</strong> ·
+                    Tendencia: <strong>${marketContext.trend_pct ?? 0}%</strong> ·
+                    Horizonte sugerido: <strong style="color:var(--accent-emerald);">${(marketContext.preferred_horizon || 'medio').toUpperCase()}</strong>
+                </div>
+            </div>
+        `;
+
+        asset30dAdvisor.style.display = 'block';
+        asset30dAdvisor.innerHTML = marketSummary + recommendations.map((item) => {
+            const actionLabel = item.recommended_action === 'tune_existing'
+                ? `Base recomendada: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
+                : item.recommended_action === 'reduce_risk'
+                    ? `Base defensiva: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
+                    : `Crear bot nuevo (${item.new_bot_preset_name || 'preset'})`;
+
+            return `
+                <div style="border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.02);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <strong style="text-transform:uppercase; color:var(--accent-blue);">${item.horizon}</strong>
+                        <span style="font-size:0.72rem; color:var(--text-secondary);">Confianza ${item.confidence}%</span>
+                    </div>
+                    <div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:6px;">${actionLabel}</div>
+                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:8px;">${item.reason || ''}</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px;">
+                        <button class="asset-advisor-apply" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-blue); color:var(--accent-blue); background:transparent; border-radius:8px; cursor:pointer;">Usar en formulario</button>
+                        <button class="asset-advisor-create" data-horizon="${item.horizon}" style="padding:7px; border:1px solid var(--accent-emerald); color:var(--accent-emerald); background:transparent; border-radius:8px; cursor:pointer;">Crear bot ahora</button>
+                        <button class="asset-advisor-auto" data-horizon="${item.horizon}" style="padding:7px; border:1px solid #facc15; color:#facc15; background:transparent; border-radius:8px; cursor:pointer;">Auto-ejecutar</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function runAsset30dAnalysis() {
+        if (!asset30dAnalyzeBtn) return;
+        const symbol = asset30dSymbol?.value || 'BTC/USDT';
+        const timeframe = asset30dTimeframe?.value || '1h';
+        const source = asset30dSource?.value || 'live';
+
+        asset30dAnalyzeBtn.disabled = true;
+        const prevText = asset30dAnalyzeBtn.textContent;
+        asset30dAnalyzeBtn.textContent = 'ANALIZANDO...';
+
+        try {
+            const response = await fetch('/api/market/analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, timeframe, source, days: 30 })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudo analizar el historico');
+            }
+
+            const payload = await response.json();
+            renderAsset30dMetrics(payload);
+            renderAsset30dChart(payload);
+
+            if (asset30dStatus) {
+                asset30dStatus.textContent = `Analisis 30 dias: ${payload.symbol} ${payload.timeframe} · fuente=${payload.source} · velas=${payload.rows}`;
+            }
+        } catch (error) {
+            console.error('Asset 30d analysis error:', error);
+            if (asset30dStatus) {
+                asset30dStatus.textContent = `Error analizando: ${error.message}`;
+            }
+        } finally {
+            asset30dAnalyzeBtn.disabled = false;
+            asset30dAnalyzeBtn.textContent = prevText;
+        }
+    }
+
+    async function runAsset30dRecommendation() {
+        if (!asset30dRecommendBtn) return;
+        const symbol = asset30dSymbol?.value || 'BTC/USDT';
+        const allocation = parseFloat(asset30dAllocation?.value || '500');
+
+        asset30dRecommendBtn.disabled = true;
+        const prevText = asset30dRecommendBtn.textContent;
+        asset30dRecommendBtn.textContent = 'RECOMENDANDO...';
+
+        try {
+            const response = await fetch('/api/bot-advisor/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, allocation })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudo generar recomendacion');
+            }
+
+            const data = await response.json();
+            renderAssetAdvisorResults(data);
+        } catch (error) {
+            console.error('Asset 30d advisor error:', error);
+            if (asset30dAdvisor) {
+                asset30dAdvisor.style.display = 'block';
+                asset30dAdvisor.innerHTML = `<div style="font-size:0.8rem;color:var(--accent-ruby);">Error: ${error.message}</div>`;
+            }
+        } finally {
+            asset30dRecommendBtn.disabled = false;
+            asset30dRecommendBtn.textContent = prevText;
+        }
+    }
+
+    async function createMicroScalpBot() {
+        if (!microScalpCreateBtn) return;
+
+        const symbol = microScalpSymbol?.value || 'BTC/USDT';
+        const allocation = parseFloat(microScalpAllocation?.value || '350');
+
+        microScalpCreateBtn.disabled = true;
+        const prevText = microScalpCreateBtn.textContent;
+        microScalpCreateBtn.textContent = 'CREANDO...';
+        if (microScalpStatus) {
+            microScalpStatus.style.color = 'var(--text-muted)';
+            microScalpStatus.textContent = `Creando micro-scalp para ${symbol}...`;
+        }
+
+        try {
+            const response = await fetch('/api/bot-presets/preset_micro_scalp_adaptativo/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    overrides: {
+                        symbol,
+                        capital_allocation: allocation,
+                        allocation,
+                        executor: 'paper',
+                    },
+                }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'No se pudo crear el bot micro-scalp');
+            }
+
+            const data = await response.json();
+            resetBotFilters();
+            openTab('bots');
+            if (microScalpStatus) {
+                microScalpStatus.style.color = 'var(--accent-emerald)';
+                microScalpStatus.textContent = `Bot creado: ${data.bot_id || 'micro-scalp'}`;
+            }
+            alert(`Micro-scalp creado en paper: ${data.bot_id || 'ok'}`);
+        } catch (error) {
+            console.error('Micro-scalp create error:', error);
+            if (microScalpStatus) {
+                microScalpStatus.style.color = 'var(--accent-ruby)';
+                microScalpStatus.textContent = `Error: ${error.message}`;
+            }
+            alert(`No se pudo crear micro-scalp: ${error.message}`);
+        } finally {
+            microScalpCreateBtn.disabled = false;
+            microScalpCreateBtn.textContent = prevText;
+        }
+    }
+
+    async function activateProductionForBot(botId) {
+        const activateProduction = async () => {
+            const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
+            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '8', 10) || 8);
+            const response = await fetch('/api/monitoring/activate-production', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bot_id: botId,
+                    lookback_hours: selectedWindow,
+                    min_scored_trades: selectedMinTrades,
+                })
+            });
+
+            let err = null;
+            let data = null;
+            if (response.ok) {
+                data = await response.json();
+            } else {
+                err = await response.json();
+            }
+
+            return { response, data, err };
+        };
+
+        const firstAttempt = await activateProduction();
+        const detail = !firstAttempt.response.ok
+            ? firstAttempt.err?.detail
+            : (firstAttempt.data?.activated === false ? firstAttempt.data : null);
+
+        if (detail?.reason === 'executor_not_hyperliquid' && detail?.suggested_patch) {
+            await new Promise((resolve) => {
+                showCustomConfirm(
+                    'Cambiar a ejecucion real',
+                    `El bot ${botId} no usa Hyperliquid mainnet. Quieres aplicar el ajuste recomendado y reintentar activacion?`,
+                    async () => {
+                        try {
+                            const patchResponse = await fetch(`/api/bots/${botId}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(detail.suggested_patch)
+                            });
+
+                            if (!patchResponse.ok) {
+                                const patchErr = await patchResponse.json();
+                                throw new Error(patchErr.detail || 'No se pudo aplicar patch');
+                            }
+
+                            const secondAttempt = await activateProduction();
+                            if (!secondAttempt.response.ok || secondAttempt.data?.activated === false) {
+                                const secondDetailPayload = secondAttempt.err?.detail || secondAttempt.data;
+                                const secondDetail = secondDetailPayload ? JSON.stringify(secondDetailPayload) : 'error';
+                                throw new Error(secondDetail);
+                            }
+
+                            fetchBots();
+                            fetchTestInsights();
+                            alert(`Produccion activada para ${secondAttempt.data.bot_id}`);
+                        } catch (innerError) {
+                            console.error('Error patch+activate production bot:', innerError);
+                            alert('No se pudo activar en produccion tras aplicar ajuste: ' + innerError.message);
+                        } finally {
+                            resolve();
+                        }
+                    }
+                );
+            });
+            return;
+        }
+
+        if (detail?.reason === 'bot_not_ready_for_production') {
+            const metrics = detail.metrics || {};
+            const readiness = detail.readiness || {};
+            const criticalOpenAlerts = Number(detail.critical_open_alerts || 0);
+            const scoredTrades = Number(metrics.scored_trades || 0);
+            const winRate = Number(metrics.win_rate || 0);
+            const netPnl = Number(metrics.net_pnl || 0);
+            const readinessSummary = String(readiness.summary || '').trim();
+            const blockers = Array.isArray(readiness.blockers)
+                ? readiness.blockers.map((v) => String(v || '').trim()).filter(Boolean)
+                : [];
+
+            if (criticalOpenAlerts > 0) {
+                showCustomConfirm(
+                    'Bloqueo por alertas criticas',
+                    `El bot ${botId} aun no esta listo. Alertas criticas abiertas: ${criticalOpenAlerts}. Metricas: ${scoredTrades} trades validos, win rate ${winRate.toFixed(2)}%, net PnL ${netPnl.toFixed(2)}. Quieres marcar alertas criticas de este bot como revisadas y reintentar activacion?`,
+                    async () => {
+                        try {
+                            const acked = await acknowledgeCriticalAlertsForBot(botId);
+                            if (acked > 0) {
+                                await fetch('/api/production/scan', { method: 'POST' });
+                            }
+
+                            const secondAttempt = await activateProduction();
+                            if (!secondAttempt.response.ok || secondAttempt.data?.activated === false) {
+                                const secondDetailPayload = secondAttempt.err?.detail || secondAttempt.data;
+                                const secondDetail = secondDetailPayload ? JSON.stringify(secondDetailPayload) : 'error';
+                                throw new Error(secondDetail);
+                            }
+
+                            fetchBots();
+                            loadMainnetVisualControl();
+                            fetchTestInsights();
+                            alert(`Produccion activada para ${secondAttempt.data.bot_id}`);
+                        } catch (innerError) {
+                            console.error('Error resolving production blockers:', innerError);
+                            alert('Sigue bloqueado para produccion: ' + innerError.message);
+                        }
+                    }
+                );
+                return;
+            }
+
+            alert(
+                `Bot no listo para produccion (${botId}).\n` +
+                `${readinessSummary ? `Diagnostico: ${readinessSummary}\n` : ''}` +
+                `Trades validos: ${scoredTrades}\n` +
+                `Win rate: ${winRate.toFixed(2)}%\n` +
+                `Net PnL: ${netPnl.toFixed(2)}\n` +
+                `Perdidas consecutivas: ${Number(metrics.consecutive_losses || 0)}\n` +
+                `Max Drawdown: ${Number(metrics.max_drawdown_abs || 0).toFixed(4)}` +
+                `${blockers.length ? `\nBloqueadores: ${blockers.join(' | ')}` : ''}`
+            );
+            return;
+        }
+
+        if (detail) {
+            const detailText = JSON.stringify(detail);
+            throw new Error(detailText);
+        }
+
+        const data = firstAttempt.data;
+        fetchBots();
+        fetchTestInsights();
+        alert(`Produccion activada para ${data.bot_id}`);
+    }
+
     async function loadBotPresets() {
         if (!newBotPreset) return;
 
@@ -1849,145 +2325,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) {
             console.error('Error loading bot presets:', error);
-        }
-    }
-
-    async function fetchProductionAlerts() {
-        if (!productionAlertsContent) return;
-
-        try {
-            const response = await fetch('/api/production/alerts?limit=12&only_open=true');
-            if (!response.ok) return;
-
-            const alerts = await response.json();
-            if (!Array.isArray(alerts) || alerts.length === 0) {
-                productionAlertsContent.innerHTML = '<div style="color: var(--text-muted);">Sin alertas críticas abiertas. Producción estable.</div>';
-                return;
-            }
-
-            productionAlertsContent.innerHTML = alerts.map((alert) => {
-                const levelColor = alert.level === 'critical'
-                    ? 'var(--accent-ruby)'
-                    : alert.level === 'warning'
-                        ? '#facc15'
-                        : 'var(--accent-blue)';
-
-                const createdAt = alert.created_at ? new Date(alert.created_at).toLocaleString() : '-';
-                const details = alert.data || {};
-                return `
-                    <div style="border:1px solid rgba(255,255,255,0.08); border-left:4px solid ${levelColor}; border-radius:10px; padding:10px; margin-bottom:10px; background:rgba(255,255,255,0.02);">
-                        <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
-                            <div style="font-weight:700; color:${levelColor}; text-transform:uppercase; font-size:0.72rem;">${alert.level}</div>
-                            <div style="font-size:0.68rem; color:var(--text-muted);">${createdAt}</div>
-                        </div>
-                        <div style="font-size:0.86rem; font-weight:600; margin-top:4px;">${alert.title || 'Alerta de producción'}</div>
-                        <div style="font-size:0.78rem; color:var(--text-secondary); margin-top:3px;">Bot: <strong>${alert.bot_id}</strong> · ${alert.message}</div>
-                        <div style="font-size:0.72rem; color:var(--text-muted); margin-top:6px;">
-                            WinRate: ${details.win_rate ?? '-'}% · NetPnL: ${details.net_pnl ?? '-'} · Losses consecutivas: ${details.consecutive_losses ?? '-'}
-                        </div>
-                        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
-                            <button class="ack-production-alert" data-id="${alert.id}" style="padding:6px 10px; border:1px solid var(--accent-blue); color:var(--accent-blue); background:transparent; border-radius:8px; cursor:pointer; font-size:0.72rem;">MARCAR REVISADA</button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        } catch (error) {
-            console.error('Error fetching production alerts:', error);
-        }
-    }
-
-    async function fetchBotQuotes() {
-        if (!botQuotesContent) return;
-
-        try {
-            const botsResponse = await fetch('/api/bots');
-            if (!botsResponse.ok) {
-                throw new Error('No se pudo cargar lista de bots');
-            }
-
-            const bots = await botsResponse.json();
-            const symbols = Array.from(
-                new Set(
-                    (Array.isArray(bots) ? bots : [])
-                        .map((bot) => {
-                            const cfg = bot.config || {};
-                            return String(cfg.symbol || bot.symbol || '').trim();
-                        })
-                        .filter(Boolean)
-                )
-            );
-
-            if (!symbols.length) {
-                botQuotesContent.innerHTML = '<div style="color: var(--text-muted);">No hay símbolos de bots para cotizar.</div>';
-                return;
-            }
-
-            const quotes = await Promise.all(
-                symbols.map(async (rawSymbol) => {
-                    const symbol = normalizeSymbolForMarketData(rawSymbol);
-                    try {
-                        const response = await fetch(`/api/market/price/${encodeURIComponent(symbol)}`);
-                        if (!response.ok) {
-                            const err = await response.json();
-                            throw new Error(err.detail || 'quote_error');
-                        }
-                        const data = await response.json();
-                        return {
-                            ok: true,
-                            rawSymbol,
-                            symbol,
-                            last: Number(data.last || 0),
-                            bid: Number(data.bid || 0),
-                            ask: Number(data.ask || 0),
-                            timestamp: data.timestamp || null,
-                        };
-                    } catch (error) {
-                        return {
-                            ok: false,
-                            rawSymbol,
-                            symbol,
-                            error: error.message || 'quote_error',
-                        };
-                    }
-                })
-            );
-
-            quotes.sort((a, b) => String(a.rawSymbol || '').localeCompare(String(b.rawSymbol || '')));
-
-            const now = new Date().toLocaleTimeString();
-            botQuotesContent.innerHTML = `
-                <div style="margin-bottom:8px; font-size:0.74rem; color: var(--text-muted);">Actualizado: ${now}</div>
-                ${quotes.map((q) => {
-                    if (!q.ok) {
-                        return `
-                            <div style="border:1px solid rgba(239,68,68,0.35); border-radius:10px; padding:10px; margin-bottom:8px; background: rgba(239,68,68,0.08);">
-                                <div style="font-weight:700; color: var(--accent-ruby);">${q.rawSymbol}</div>
-                                <div style="font-size:0.74rem; color: var(--text-secondary); margin-top:2px;">Error en ${q.symbol}: ${q.error}</div>
-                            </div>
-                        `;
-                    }
-
-                    const decimals = choosePriceDecimals(q.last || q.bid || q.ask || 0);
-                    const quoteTs = q.timestamp ? new Date(q.timestamp).toLocaleTimeString() : '-';
-                    return `
-                        <div style="border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; margin-bottom:8px; background: rgba(255,255,255,0.02);">
-                            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
-                                <div style="font-weight:700;">${q.rawSymbol}</div>
-                                <span style="font-size:0.68rem; border:1px solid var(--accent-emerald); color: var(--accent-emerald); border-radius:10px; padding:2px 8px;">LIVE</span>
-                            </div>
-                            <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; margin-top:6px; font-size:0.78rem;">
-                                <div>Last<br><strong>${(q.last || 0).toFixed(decimals)}</strong></div>
-                                <div>Bid<br><strong>${(q.bid || 0).toFixed(decimals)}</strong></div>
-                                <div>Ask<br><strong>${(q.ask || 0).toFixed(decimals)}</strong></div>
-                            </div>
-                            <div style="font-size:0.70rem; color: var(--text-muted); margin-top:4px;">${q.symbol} · ts ${quoteTs}</div>
-                        </div>
-                    `;
-                }).join('')}
-            `;
-        } catch (error) {
-            console.error('Error fetching bot quotes:', error);
-            botQuotesContent.innerHTML = `<div style="color: var(--accent-ruby);">No se pudieron cargar cotizaciones: ${error.message}</div>`;
         }
     }
 
@@ -2073,32 +2410,129 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function buildProductionReadiness(item = {}, minScoredTrades = 8) {
         const metrics = item.metrics || {};
+        const readinessApi = item.readiness || {};
         const scoredTrades = Number(metrics.scored_trades || 0);
-        const winRate = Number(metrics.win_rate || 0);
         const netPnl = Number(metrics.net_pnl || 0);
-        const consecutiveLosses = Number(metrics.consecutive_losses || 0);
-        const criticalAlerts = Number(item.open_critical_alerts || 0);
+        const criticalAlerts = Number(item.open_critical_alerts || item.critical_open_alerts || 0);
+        const isRunning = String(item.status || '').toLowerCase() === 'running';
+        const recommendationLevel = String((item.recommendation || {}).level || '').toLowerCase();
+        const apiGateOk = Boolean(readinessApi.gate_ok);
+        const apiSummary = String(readinessApi.summary || '').trim();
+        const apiBlockers = Array.isArray(readinessApi.blockers)
+            ? readinessApi.blockers.map((value) => String(value || '').trim()).filter(Boolean)
+            : [];
 
-        const reasons = [];
-        if (scoredTrades < minScoredTrades) reasons.push(`trades<${minScoredTrades}`);
-        if (winRate < 55) reasons.push('win_rate<55%');
-        if (netPnl <= 0) reasons.push('net_pnl<=0');
-        if (consecutiveLosses > 2) reasons.push('loss_streak>2');
-        if (criticalAlerts > 0) reasons.push(`critical_alerts=${criticalAlerts}`);
+        if (item.candidate_for_production || apiGateOk) {
+            return {
+                ready: true,
+                label: 'APTO PRODUCCION',
+                color: 'var(--accent-emerald)',
+                reasonText: apiSummary || 'Apto para entrar en produccion segun pruebas y guardrails',
+                blockers: [],
+            };
+        }
 
-        const ready = reasons.length === 0;
-        const almostReady = !ready && reasons.length <= 1 && criticalAlerts === 0;
-        const label = ready ? 'PREPARADO' : (almostReady ? 'CASI LISTO' : 'BLOQUEADO');
-        const color = ready
-            ? 'var(--accent-emerald)'
-            : (almostReady ? '#facc15' : 'var(--accent-ruby)');
+        const blockers = [...apiBlockers];
+        if (scoredTrades < minScoredTrades) {
+            blockers.push(`Muestra insuficiente (${scoredTrades}/${minScoredTrades} trades validos)`);
+        }
+        if (criticalAlerts > 0) {
+            blockers.push(`Alertas criticas abiertas (${criticalAlerts})`);
+        }
+        if (!isRunning) {
+            blockers.push('Bot detenido');
+        }
+        if (recommendationLevel === 'insufficient_data') {
+            blockers.push('Sin evidencia estadistica suficiente');
+        }
+        if (netPnl <= 0) {
+            blockers.push('Net PnL no positivo');
+        }
+
+        const hasKnownBlockers = blockers.length > 0;
+        const label = 'NO APTO / BLOQUEADO';
+        const color = hasKnownBlockers ? 'var(--accent-ruby)' : '#facc15';
+        const reasonText = apiSummary || (hasKnownBlockers
+            ? blockers.join(' · ')
+            : 'Aun no cumple criterios de promocion a produccion');
 
         return {
-            ready,
+            ready: false,
             label,
             color,
-            reasonText: ready ? 'Cumple criterios de producción' : reasons.join(' · '),
+            reasonText,
+            blockers,
         };
+    }
+
+    function renderProductionEligibilityGroups(rows = [], selectedMinTrades = 8) {
+        const readyRows = [];
+        const blockedRows = [];
+
+        rows.forEach((item) => {
+            const readiness = buildProductionReadiness(item, selectedMinTrades);
+            if (readiness.ready) {
+                readyRows.push({ item, readiness });
+            } else {
+                blockedRows.push({ item, readiness });
+            }
+        });
+
+        const renderItem = ({ item, readiness }) => {
+            const m = item.metrics || {};
+            const pnl = Number(m.net_pnl || 0);
+            const pnlColor = pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            const status = String(item.status || '-').toUpperCase();
+            const runtime = item.runtime_ready ? 'RUNNING' : 'STOPPED';
+            const titleLabel = readiness.ready ? 'APTO PARA PRODUCCION' : 'BLOQUEADO PRODUCCION';
+            return `
+                <div style="border:1px solid rgba(255,255,255,0.08); border-left:4px solid ${readiness.color}; border-radius:10px; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.02);">
+                    <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <div style="font-weight:700;">${item.bot_id || '-'}</div>
+                        <span style="font-size:0.66rem; border:1px solid ${readiness.color}; color:${readiness.color}; border-radius:10px; padding:2px 8px;">${titleLabel}</span>
+                    </div>
+                    <div style="font-size:0.72rem; color: var(--text-muted); margin-top:3px;">${item.strategy || '-'} · estado ${status} · runtime ${runtime}</div>
+                    <div style="font-size:0.74rem; color: ${readiness.color}; margin-top:6px;"><strong>Resultado:</strong> ${readiness.reasonText}</div>
+                    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; margin-top:8px; font-size:0.72rem; color: var(--text-secondary);">
+                        <div>Trades validos<br><strong>${m.scored_trades ?? 0}</strong></div>
+                        <div>Win Rate<br><strong>${m.win_rate ?? 0}%</strong></div>
+                        <div>Net PnL<br><strong style="color:${pnlColor};">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</strong></div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const gateStateLabel = readyRows.length > 0 ? 'HAY BOTS ACTIVABLES EN PRODUCCION' : 'NO HAY BOTS APTOS PARA PRODUCCION';
+        const gateStateColor = readyRows.length > 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+
+        return `
+            <div style="margin-bottom:10px; padding:12px; border:2px solid ${gateStateColor}; border-radius:12px; background: ${readyRows.length > 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)'};">
+                <div style="font-size:0.7rem; text-transform:uppercase; color: var(--text-muted);">Gate de produccion</div>
+                <div style="font-size:0.92rem; font-weight:800; letter-spacing:0.02em; color:${gateStateColor}; margin-top:3px;">${gateStateLabel}</div>
+                <div style="font-size:0.74rem; color: var(--text-secondary); margin-top:4px;">Solo los bots en <strong style="color: var(--accent-emerald);">APTO PARA PRODUCCION</strong> deben pasar al boton de activacion real.</div>
+            </div>
+
+            <div style="display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px; margin-bottom:12px;">
+                <div style="padding:10px; border:1px solid rgba(16,185,129,0.45); border-radius:10px; background: rgba(16,185,129,0.08);">
+                    <div style="font-size:0.72rem; text-transform:uppercase; color: var(--text-muted);">Aptos para producción</div>
+                    <div style="font-size:1.1rem; font-weight:700; color: var(--accent-emerald); margin-top:4px;">${readyRows.length}</div>
+                </div>
+                <div style="padding:10px; border:1px solid rgba(239,68,68,0.45); border-radius:10px; background: rgba(239,68,68,0.08);">
+                    <div style="font-size:0.72rem; text-transform:uppercase; color: var(--text-muted);">No aptos / bloqueados</div>
+                    <div style="font-size:1.1rem; font-weight:700; color: var(--accent-ruby); margin-top:4px;">${blockedRows.length}</div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:10px; padding:10px; border:1px solid rgba(16,185,129,0.35); border-radius:10px; background: rgba(16,185,129,0.05);">
+                <div style="font-size:0.76rem; font-weight:700; color: var(--accent-emerald); margin-bottom:8px;">LISTA APTO PARA PRODUCCIÓN</div>
+                ${readyRows.length ? readyRows.map(renderItem).join('') : '<div style="font-size:0.75rem; color: var(--text-muted);">No hay bots aptos en este rango.</div>'}
+            </div>
+
+            <div style="padding:10px; border:1px solid rgba(239,68,68,0.35); border-radius:10px; background: rgba(239,68,68,0.05);">
+                <div style="font-size:0.76rem; font-weight:700; color: var(--accent-ruby); margin-bottom:8px;">LISTA NO APTO / BLOQUEADO</div>
+                ${blockedRows.length ? blockedRows.map(renderItem).join('') : '<div style="font-size:0.75rem; color: var(--text-muted);">No hay bots bloqueados.</div>'}
+            </div>
+        `;
     }
 
     function buildBotSemaphore(item = {}, minScoredTrades = 8) {
@@ -2251,7 +2685,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const runtimeLabel = item.runtime_ready
                 ? '<span style="font-size:0.66rem; border:1px solid var(--accent-blue); color: var(--accent-blue); border-radius:10px; padding:2px 7px;">RUNNING</span>'
                 : `<span style="font-size:0.66rem; border:1px solid ${levelInfo.color}; color: ${levelInfo.color}; border-radius:10px; padding:2px 7px;">${levelInfo.label}</span>`;
-            const alertCount = item.open_critical_alerts ?? 0;
+            const alertCount = item.open_critical_alerts ?? item.critical_open_alerts ?? 0;
 
             return `
                 <tr>
@@ -2270,7 +2704,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             <button class="validate-test-bot" data-bot-id="${item.bot_id}" style="padding:4px 8px; border:1px solid #facc15; color:#facc15; background: transparent; border-radius:7px; cursor:pointer; font-size:0.68rem;">VALIDAR</button>
                             <button class="apply-test-recommendation" data-bot-id="${item.bot_id}" data-payload='${payloadAttr}' ${hasSuggested ? '' : 'disabled'} style="padding:4px 8px; border:1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; border-radius:7px; cursor:${hasSuggested ? 'pointer' : 'not-allowed'}; font-size:0.68rem; opacity:${hasSuggested ? '1' : '0.5'};">AJUSTAR</button>
                             <button class="start-test-bot" data-bot-id="${item.bot_id}" style="padding:4px 8px; border:1px solid var(--accent-emerald); color: var(--accent-emerald); background: transparent; border-radius:7px; cursor:pointer; font-size:0.68rem;">INICIAR</button>
-                            <button class="activate-prod-bot" data-bot-id="${item.bot_id}" style="padding:4px 8px; border:1px solid var(--accent-emerald); color: var(--accent-emerald); background: rgba(16,185,129,0.08); border-radius:7px; cursor:pointer; font-size:0.68rem;">PROD</button>
+                            <button class="activate-prod-bot" data-bot-id="${item.bot_id}" ${readiness.ready ? '' : 'disabled'} style="padding:4px 8px; border:1px solid ${readiness.ready ? 'var(--accent-emerald)' : 'rgba(239,68,68,0.55)'}; color: ${readiness.ready ? 'var(--accent-emerald)' : 'rgba(239,68,68,0.75)'}; background: ${readiness.ready ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.06)'}; border-radius:7px; cursor:${readiness.ready ? 'pointer' : 'not-allowed'}; font-size:0.68rem; opacity:${readiness.ready ? '1' : '0.75'};">${readiness.ready ? 'PROD' : 'BLOQ'}</button>
                         </div>
                     </td>
                 </tr>
@@ -2299,8 +2733,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const rows = Array.isArray(payload.results) ? payload.results : [];
             const orderedRows = sortInsightsRows(rows);
 
-            renderIntelligenceTop(summary, orderedRows, selectedWindow, selectedMinTrades);
-            renderBotTrafficLightPanel(summary, orderedRows, selectedMinTrades);
+            try {
+                renderIntelligenceTop(summary, orderedRows, selectedWindow, selectedMinTrades);
+            } catch (renderError) {
+                console.error('Error rendering intelligence top table:', renderError);
+                if (intelligenceTopTableBody) {
+                    intelligenceTopTableBody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 1rem; color: var(--accent-ruby);">Error renderizando la tabla de control.</td></tr>';
+                }
+            }
+
+            try {
+                renderBotTrafficLightPanel(summary, orderedRows, selectedMinTrades);
+            } catch (semaphoreError) {
+                console.error('Error rendering traffic light panel:', semaphoreError);
+            }
 
             if (!orderedRows.length) {
                 if (testInsightsContent) {
@@ -2310,84 +2756,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const header = `
-                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02);">
-                    <div style="font-size:0.72rem; text-transform:uppercase; color: var(--text-muted);">Resumen de validación</div>
-                    <div style="font-size:0.84rem; color: var(--text-secondary); margin-top: 4px;">
-                        Ventana: <strong>${selectedWindow}h</strong> ·
-                        Mínimo trades válidos: <strong>${selectedMinTrades}</strong> ·
-                        Bots analizados: <strong>${summary.bots_analyzed ?? 0}</strong> ·
-                        Rentables: <strong>${summary.profitable_bots ?? 0}</strong> ·
-                        Candidatos producción: <strong style="color: var(--accent-emerald);">${summary.production_candidates ?? 0}</strong> ·
-                        Alertas críticas abiertas: <strong style="color: var(--accent-ruby);">${summary.critical_alerts_open ?? 0}</strong>
-                    </div>
+                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02); display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px;">
+                    <div style="font-size:0.74rem; color: var(--text-secondary);">Ventana<br><strong>${selectedWindow}h</strong></div>
+                    <div style="font-size:0.74rem; color: var(--text-secondary);">Mínimo trades<br><strong>${selectedMinTrades}</strong></div>
+                    <div style="font-size:0.74rem; color: var(--accent-emerald);">Aptos producción<br><strong>${summary.production_candidates ?? 0}</strong></div>
+                    <div style="font-size:0.74rem; color: var(--accent-ruby);">Alertas críticas<br><strong>${summary.critical_alerts_open ?? 0}</strong></div>
                 </div>
             `;
 
-            const cards = orderedRows.slice(0, 8).map((item) => {
-                const m = item.metrics || {};
-                const rec = item.recommendation || {};
-                const suggested = rec.suggested_params || {};
-                const levelInfo = recommendationLevelLabel(rec.level);
-                const readiness = buildProductionReadiness(item, selectedMinTrades);
-                const candidateBadge = item.candidate_for_production
-                    ? '<span style="font-size:0.68rem; color: var(--accent-emerald); border:1px solid var(--accent-emerald); border-radius:12px; padding:2px 8px;">CANDIDATO PROD</span>'
-                    : '<span style="font-size:0.68rem; color: var(--text-muted); border:1px solid rgba(255,255,255,0.1); border-radius:12px; padding:2px 8px;">EN VALIDACIÓN</span>';
-
-                const payloadAttr = JSON.stringify(suggested).replace(/'/g, '&apos;');
-
-                return `
-                    <div style="border:1px solid rgba(255,255,255,0.08); border-left:4px solid ${levelInfo.color}; border-radius:10px; padding:12px; margin-bottom:10px; background:rgba(255,255,255,0.02);">
-                        <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; flex-wrap:wrap;">
-                            <div>
-                                <div style="font-weight:700; font-size:0.86rem;">${item.bot_id}</div>
-                                <div style="font-size:0.72rem; color: var(--text-muted);">${item.strategy || '-'} · Estado: ${item.status || '-'}</div>
-                            </div>
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                ${candidateBadge}
-                                ${item.runtime_ready ? '<span style="font-size:0.68rem; color: var(--accent-blue); border:1px solid var(--accent-blue); border-radius:12px; padding:2px 8px;">RUNNING</span>' : ''}
-                                <span style="font-size:0.68rem; color:${levelInfo.color}; border:1px solid ${levelInfo.color}; border-radius:12px; padding:2px 8px;">${levelInfo.label}</span>
-                            </div>
-                        </div>
-
-                        <div style="margin-top:8px; font-size:0.72rem; color: ${readiness.color};">
-                            <strong>Precheck producción:</strong> ${readiness.label}
-                            <span style="color: var(--text-muted);"> · ${readiness.reasonText}</span>
-                        </div>
-
-                        <div style="margin-top:8px; display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px;">
-                            <div style="font-size:0.72rem; color:var(--text-secondary);">WinRate<br><strong>${m.win_rate ?? 0}%</strong></div>
-                            <div style="font-size:0.72rem; color:var(--text-secondary);">Net PnL<br><strong>${m.net_pnl ?? 0}</strong></div>
-                            <div style="font-size:0.72rem; color:var(--text-secondary);">Loss streak<br><strong>${m.consecutive_losses ?? 0}</strong></div>
-                            <div style="font-size:0.72rem; color:var(--text-secondary);">Max DD<br><strong>${m.max_drawdown_abs ?? 0}</strong></div>
-                        </div>
-
-                        <div style="margin-top:8px; font-size:0.74rem; color: var(--text-muted);">${rec.summary || ''}</div>
-                        <div style="margin-top:8px;">${buildSuggestedParamsList(suggested)}</div>
-
-                        <div style="margin-top:10px; display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap;">
-                            <button class="validate-test-bot" data-bot-id="${item.bot_id}"
-                                style="padding:6px 10px; border:1px solid #facc15; color:#facc15; background: transparent; border-radius:8px; cursor:pointer; font-size:0.72rem;">
-                                VALIDAR
-                            </button>
-                            <button class="apply-test-recommendation" data-bot-id="${item.bot_id}" data-payload='${payloadAttr}'
-                                style="padding:6px 10px; border:1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; border-radius:8px; cursor:pointer; font-size:0.72rem;">
-                                APLICAR AJUSTE
-                            </button>
-                            <button class="start-test-bot" data-bot-id="${item.bot_id}"
-                                style="padding:6px 10px; border:1px solid var(--accent-emerald); color: var(--accent-emerald); background: transparent; border-radius:8px; cursor:pointer; font-size:0.72rem;">
-                                INICIAR BOT
-                            </button>
-                            <button class="activate-prod-bot" data-bot-id="${item.bot_id}"
-                                style="padding:6px 10px; border:1px solid var(--accent-emerald); color: var(--accent-emerald); background: rgba(16,185,129,0.08); border-radius:8px; cursor:pointer; font-size:0.72rem;">
-                                ACTIVAR PRODUCCIÓN
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
             if (testInsightsContent) {
-                testInsightsContent.innerHTML = header + cards;
+                testInsightsContent.innerHTML = header + renderProductionEligibilityGroups(orderedRows, selectedMinTrades);
             }
         } catch (error) {
             console.error('Error fetching test insights:', error);
@@ -2427,7 +2805,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const advisorApplyBtn = e.target.closest('.advisor-apply-btn');
         const advisorCreateBtn = e.target.closest('.advisor-create-btn');
         const advisorAutoBtn = e.target.closest('.advisor-auto-btn');
-        const ackProductionAlert = e.target.closest('.ack-production-alert');
+        const assetAdvisorApplyBtn = e.target.closest('.asset-advisor-apply');
+        const assetAdvisorCreateBtn = e.target.closest('.asset-advisor-create');
+        const assetAdvisorAutoBtn = e.target.closest('.asset-advisor-auto');
         const applyTestRecommendation = e.target.closest('.apply-test-recommendation');
         const startTestBotBtn = e.target.closest('.start-test-bot');
         const validateTestBotBtn = e.target.closest('.validate-test-bot');
@@ -2700,18 +3080,87 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (ackProductionAlert) {
-            const alertId = ackProductionAlert.dataset.id;
-            if (!alertId) return;
+        if (assetAdvisorApplyBtn) {
+            const horizon = assetAdvisorApplyBtn.dataset.horizon;
+            const rec = assetAdvisorMap[horizon];
+            if (!rec) return;
+            const configToApply = rec.new_bot_config || rec.edited_config;
+            if (!configToApply) return;
+
+            const symbol = asset30dSymbol?.value || configToApply.symbol || 'BTC/USDT';
+            const patched = { ...configToApply, symbol, executor: 'paper' };
+            applyConfigToCreateForm(patched);
+
+            const modal = document.getElementById('createBotModal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        if (assetAdvisorCreateBtn) {
+            const horizon = assetAdvisorCreateBtn.dataset.horizon;
+            const rec = assetAdvisorMap[horizon];
+            if (!rec) return;
+
+            const configToCreate = rec.new_bot_config || rec.edited_config;
+            if (!configToCreate) return;
+
+            const symbol = asset30dSymbol?.value || configToCreate.symbol || 'BTC/USDT';
+            const baseId = symbol.replace(/[^A-Za-z0-9]+/g, '-');
+            const uniqueId = `Asset-${baseId}-${horizon}-${Math.floor(Math.random() * 10000)}`;
+            const payload = { ...configToCreate, id: uniqueId, symbol, executor: 'paper' };
+
             try {
-                const response = await fetch(`/api/production/alerts/${alertId}/ack`, { method: 'POST' });
-                if (response.ok) {
-                    fetchProductionAlerts();
+                const response = await fetch('/api/bots', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('No se pudo crear el bot: ' + (err.detail || 'Error desconocido'));
+                } else {
+                    resetBotFilters();
+                    openTab('bots');
+                    alert(`Bot creado: ${uniqueId}`);
                 }
             } catch (error) {
-                console.error('Error acknowledging production alert:', error);
+                console.error('Asset advisor create bot error:', error);
             }
         }
+
+        if (assetAdvisorAutoBtn) {
+            const horizon = assetAdvisorAutoBtn.dataset.horizon;
+            const symbol = asset30dSymbol?.value || 'BTC/USDT';
+            const allocation = parseFloat(asset30dAllocation?.value || 500);
+
+            assetAdvisorAutoBtn.disabled = true;
+            const prevText = assetAdvisorAutoBtn.textContent;
+            assetAdvisorAutoBtn.textContent = 'EJECUTANDO...';
+
+            try {
+                const response = await fetch('/api/bot-advisor/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ horizon, symbol, allocation, force_new: true })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('No se pudo auto-ejecutar: ' + (err.detail || 'Error desconocido'));
+                } else {
+                    const data = await response.json();
+                    resetBotFilters();
+                    openTab('bots');
+                    alert(data.message || 'Auto-ejecucion completada');
+                }
+            } catch (error) {
+                console.error('Asset advisor auto execute error:', error);
+                alert('Error de red al auto-ejecutar recomendacion.');
+            } finally {
+                assetAdvisorAutoBtn.disabled = false;
+                assetAdvisorAutoBtn.textContent = prevText;
+            }
+        }
+
 
         if (applyTestRecommendation) {
             const botId = applyTestRecommendation.dataset.botId;
@@ -2775,9 +3224,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(err.detail || 'No se pudo validar bot');
                 }
                 const data = await response.json();
-                const reasons = (data.reasons || []).join(', ') || 'sin bloqueos';
+                const reasons = data.reasons || [];
                 const actions = (data.suggested_actions || []).join(' | ') || 'sin acciones sugeridas';
-                alert(`Validación ${botId}\nRazones: ${reasons}\nAcciones: ${actions}`);
+                if (reasons.length === 1 && reasons[0] === 'no_blocking_issue_detected') {
+                    await activateProductionForBot(botId);
+                } else {
+                    const reasonText = reasons.join(', ') || 'sin bloqueos';
+                    alert(`Validacion ${botId}\nRazones: ${reasonText}\nAcciones: ${actions}`);
+                }
             } catch (error) {
                 console.error('Error validating bot:', error);
                 alert('No se pudo validar bot: ' + error.message);
@@ -2787,132 +3241,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activateProdBotBtn) {
             const botId = activateProdBotBtn.dataset.botId;
             if (!botId) return;
-
-            const activateProduction = async () => {
-                const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
-                const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '8', 10) || 8);
-                const response = await fetch('/api/monitoring/activate-production', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        bot_id: botId,
-                        lookback_hours: selectedWindow,
-                        min_scored_trades: selectedMinTrades,
-                    })
-                });
-
-                let err = null;
-                let data = null;
-                if (response.ok) {
-                    data = await response.json();
-                } else {
-                    err = await response.json();
-                }
-
-                return { response, data, err };
-            };
-
             try {
-                const firstAttempt = await activateProduction();
-                const detail = !firstAttempt.response.ok
-                    ? firstAttempt.err?.detail
-                    : (firstAttempt.data?.activated === false ? firstAttempt.data : null);
-
-                if (detail) {
-
-                    if (detail?.reason === 'executor_not_hyperliquid' && detail?.suggested_patch) {
-                        showCustomConfirm(
-                            'Cambiar a ejecución real',
-                            `El bot ${botId} no usa Hyperliquid mainnet. ¿Quieres aplicar el ajuste recomendado y reintentar activación?`,
-                            async () => {
-                                try {
-                                    const patchResponse = await fetch(`/api/bots/${botId}`, {
-                                        method: 'PATCH',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(detail.suggested_patch)
-                                    });
-
-                                    if (!patchResponse.ok) {
-                                        const patchErr = await patchResponse.json();
-                                        throw new Error(patchErr.detail || 'No se pudo aplicar patch');
-                                    }
-
-                                    const secondAttempt = await activateProduction();
-                                    if (!secondAttempt.response.ok || secondAttempt.data?.activated === false) {
-                                        const secondDetailPayload = secondAttempt.err?.detail || secondAttempt.data;
-                                        const secondDetail = secondDetailPayload ? JSON.stringify(secondDetailPayload) : 'error';
-                                        throw new Error(secondDetail);
-                                    }
-
-                                    fetchBots();
-                                    fetchTestInsights();
-                                    alert(`Producción activada para ${secondAttempt.data.bot_id}`);
-                                } catch (innerError) {
-                                    console.error('Error patch+activate production bot:', innerError);
-                                    alert('No se pudo activar en producción tras aplicar ajuste: ' + innerError.message);
-                                }
-                            }
-                        );
-                        return;
-                    }
-
-                    if (detail?.reason === 'bot_not_ready_for_production') {
-                        const metrics = detail.metrics || {};
-                        const criticalOpenAlerts = Number(detail.critical_open_alerts || 0);
-                        const scoredTrades = Number(metrics.scored_trades || 0);
-                        const winRate = Number(metrics.win_rate || 0);
-                        const netPnl = Number(metrics.net_pnl || 0);
-
-                        if (criticalOpenAlerts > 0) {
-                            showCustomConfirm(
-                                'Bloqueo por alertas críticas',
-                                `El bot ${botId} aún no está listo. Alertas críticas abiertas: ${criticalOpenAlerts}. Métricas: ${scoredTrades} trades válidos, win rate ${winRate.toFixed(2)}%, net PnL ${netPnl.toFixed(2)}. ¿Marcar alertas críticas de este bot como revisadas y reintentar activación?`,
-                                async () => {
-                                    try {
-                                        const acked = await acknowledgeCriticalAlertsForBot(botId);
-                                        if (acked > 0) {
-                                            await fetch('/api/production/scan', { method: 'POST' });
-                                        }
-
-                                        const secondAttempt = await activateProduction();
-                                        if (!secondAttempt.response.ok || secondAttempt.data?.activated === false) {
-                                            const secondDetailPayload = secondAttempt.err?.detail || secondAttempt.data;
-                                            const secondDetail = secondDetailPayload ? JSON.stringify(secondDetailPayload) : 'error';
-                                            throw new Error(secondDetail);
-                                        }
-
-                                        fetchBots();
-                                        fetchProductionAlerts();
-                                        fetchTestInsights();
-                                        alert(`Producción activada para ${secondAttempt.data.bot_id}`);
-                                    } catch (innerError) {
-                                        console.error('Error resolving production blockers:', innerError);
-                                        alert('Sigue bloqueado para producción: ' + innerError.message);
-                                    }
-                                }
-                            );
-                            return;
-                        }
-
-                        alert(
-                            `Bot no listo para producción (${botId}).\n` +
-                            `Trades válidos: ${scoredTrades}\n` +
-                            `Win rate: ${winRate.toFixed(2)}%\n` +
-                            `Net PnL: ${netPnl.toFixed(2)}\n` +
-                            `Pérdidas consecutivas: ${Number(metrics.consecutive_losses || 0)}\n` +
-                            `Max Drawdown: ${Number(metrics.max_drawdown_abs || 0).toFixed(4)}`
-                        );
-                        return;
-                    }
-
-                    const detailText = detail ? JSON.stringify(detail) : 'error';
-                    throw new Error(detailText);
-                }
-
-                const data = firstAttempt.data;
-                fetchBots();
-                fetchTestInsights();
-                alert(`Producción activada para ${data.bot_id}`);
+                await activateProductionForBot(botId);
             } catch (error) {
                 console.error('Error activating production bot:', error);
                 alert('No se pudo activar en producción: ' + error.message);
@@ -2920,25 +3250,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    if (refreshProductionAlerts) {
-        refreshProductionAlerts.addEventListener('click', async () => {
-            try {
-                await fetch('/api/production/scan', { method: 'POST' });
-            } catch (error) {
-                console.error('Error triggering production scan:', error);
-            } finally {
-                fetchProductionAlerts();
-            }
-        });
-    }
-
     if (refreshMainnetVisualBtn) {
         refreshMainnetVisualBtn.addEventListener('click', loadMainnetVisualControl);
     }
 
-    if (refreshBotQuotesBtn) {
-        refreshBotQuotesBtn.addEventListener('click', fetchBotQuotes);
-    }
 
     if (saveHyperliquidSettingsBtn) {
         saveHyperliquidSettingsBtn.addEventListener('click', saveHyperliquidSettings);
@@ -2946,6 +3261,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (refreshRuntimeOpsBtn) {
         refreshRuntimeOpsBtn.addEventListener('click', loadRuntimeOpsStatus);
+    }
+
+    if (refreshTakeProfitAdaptiveBtn) {
+        refreshTakeProfitAdaptiveBtn.addEventListener('click', loadTakeProfitAdaptiveStatus);
     }
 
     if (startRuntimeOpsBtn) {
@@ -2978,6 +3297,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (testInsightsMinTrades) {
         testInsightsMinTrades.addEventListener('change', fetchTestInsights);
+    }
+
+    if (asset30dAnalyzeBtn) {
+        asset30dAnalyzeBtn.addEventListener('click', runAsset30dAnalysis);
+    }
+
+    if (asset30dRecommendBtn) {
+        asset30dRecommendBtn.addEventListener('click', runAsset30dRecommendation);
+    }
+
+    if (microScalpCreateBtn) {
+        microScalpCreateBtn.addEventListener('click', createMicroScalpBot);
     }
 
     // Delegated Change listener for Executor dropdown
@@ -3045,9 +3376,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- BOT ACTIONS (PLAY, PAUSE, DELETE, ARCHIVE, RESTORE) ---
     const handleBotActions = async (e) => {
-        // Prevent event bubbling to avoid multiple triggers if nested
-        e.stopPropagation();
-
         const actionIcon = e.target.closest('.bot-action');
         const editIcon = e.target.closest('.edit-bot-btn');
         const deleteIcon = e.target.closest('.delete-bot-btn');
@@ -3055,9 +3383,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const restoreIcon = e.target.closest('.restore-bot-btn');
         const restoreStartIcon = e.target.closest('.restore-start-bot-btn');
 
+        if (!actionIcon && !editIcon && !deleteIcon && !archiveIcon && !restoreIcon && !restoreStartIcon) {
+            return;
+        }
+
         if (actionIcon) {
+            if (actionIcon.disabled) return;
             const botId = actionIcon.dataset.id;
-            const isCurrentlyRunning = actionIcon.dataset.lucide === 'pause-circle';
+            const isCurrentlyRunning = actionIcon.dataset.running === 'true';
             const endpoint = isCurrentlyRunning ? `/api/bots/${botId}/stop` : `/api/bots/${botId}/start`;
 
             actionIcon.style.opacity = '0.5';
@@ -3175,8 +3508,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    if (botTableBody) botTableBody.addEventListener('click', handleBotActions);
-    if (vaultTableBody) vaultTableBody.addEventListener('click', handleBotActions);
+    // Document-level delegation keeps actions working even after dynamic table rerenders.
+    document.addEventListener('click', handleBotActions);
+
+    [botFilterSearch, botFilterStrategy, botFilterStatus].forEach((control) => {
+        if (!control) return;
+        control.addEventListener('input', fetchBots);
+        control.addEventListener('change', fetchBots);
+    });
 
     // -- Live Stats Fetch --
     async function fetchStats() {
@@ -3213,67 +3552,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // -- Open Positions Fetch --
-    async function fetchPositions() {
-        try {
-            const res = await fetch('/api/positions');
-            const positions = await res.json();
-            dashboardState.positions = Array.isArray(positions) ? positions : [];
-
-            const tbody = document.getElementById('openPositionsTableBody');
-            const badge = document.getElementById('openPositionsBadge');
-
-            if (badge) badge.textContent = `${positions.length} abiertas`;
-
-            if (!tbody) return;
-            if (positions.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay posiciones abiertas</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = positions.map(p => {
-                const upnl = p.unrealized_pnl || 0;
-                const upnlColor = upnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
-                const openedAt = new Date(p.opened_at).toLocaleString();
-                return `
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;" 
-                    onmouseenter="this.style.background='rgba(255,255,255,0.03)'" 
-                    onmouseleave="this.style.background=''">
-                    <td style="padding: 0.75rem; font-size: 0.83rem; color: var(--accent-blue);">${p.bot_id}</td>
-                    <td style="padding: 0.75rem; font-weight: 600;">${p.symbol}</td>
-                    <td style="padding: 0.75rem; color: ${p.side === 'long' ? '#60a5fa' : '#f87171'}; font-weight: 700;">${p.side.toUpperCase()}</td>
-                    <td style="padding: 0.75rem;">$${(p.entry_price || 0).toLocaleString()}</td>
-                    <td style="padding: 0.75rem; color: var(--text-secondary);">$${(p.current_price || p.entry_price || 0).toLocaleString()}</td>
-                    <td style="padding: 0.75rem;">${p.quantity}</td>
-                    <td style="padding: 0.75rem; font-weight: 600; color: ${upnlColor};">${upnl >= 0 ? '+' : ''}$${upnl.toFixed(4)}</td>
-                    <td style="padding: 0.75rem; color: #facc15;">$${(p.fee_paid || 0).toFixed(4)}</td>
-                    <td style="padding: 0.75rem; color: var(--text-muted); font-size: 0.75rem;">${openedAt}</td>
-                    <td style="padding: 0.75rem; text-align: right;">
-                        <button class="glass" onclick="window.closePosition('${p.id}')" style="padding: 4px 8px; font-size: 0.65rem; color: var(--accent-ruby); border-color: var(--accent-ruby); cursor: pointer;">CERRAR</button>
-                    </td>
-                </tr>`;
-            }).join('');
-
-            refreshDerivedVisuals();
-        } catch (e) {
-            console.error('fetchPositions error:', e);
-        }
-    }
-
-    window.closePosition = async function (posId) {
-        if (!confirm('¿Estás seguro de que deseas cerrar esta posición manualmente? Esta acción solo actualiza el estado local.')) return;
-        try {
-            const res = await fetch(`/api/positions/${posId}/close`, { method: 'POST' });
-            if (res.ok) {
-                fetchPositions();
-                fetchStats();
-            } else {
-                alert('Error al cerrar la posición');
-            }
-        } catch (e) {
-            console.error('closePosition error:', e);
-        }
-    };
 
     // --- REFINEMENTS: SPARKLINES & PREVIEWS ---
 
@@ -3379,9 +3657,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    previewPopup.addEventListener('mouseleave', () => {
-        hidePreview();
-    });
+    if (previewPopup) {
+        previewPopup.addEventListener('mouseleave', () => {
+            hidePreview();
+        });
+    }
 
     // View Options Logic
     document.querySelectorAll('.view-options-btn').forEach(btn => {
@@ -3609,19 +3889,15 @@ document.addEventListener('DOMContentLoaded', () => {
     loadBotPresets();
     fetchTrades();
     fetchStats();
-    fetchPositions();
-    fetchProductionAlerts();
-    fetchBotQuotes();
     fetchTestInsights();
     loadMainnetVisualControl();
     loadHyperliquidSettings();
     loadRuntimeOpsStatus();
+    loadTakeProfitAdaptiveStatus();
     setInterval(fetchBots, 5000);
     setInterval(fetchTrades, 10000);
     setInterval(fetchStats, 10000);
-    setInterval(fetchPositions, 10000);
-    setInterval(fetchProductionAlerts, 15000);
-    setInterval(fetchBotQuotes, 10000);
     setInterval(fetchTestInsights, 20000);
     setInterval(loadMainnetVisualControl, 15000);
+    setInterval(loadTakeProfitAdaptiveStatus, 20000);
 });

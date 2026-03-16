@@ -111,3 +111,55 @@ bash scripts/api_runtime.sh restart
 bash scripts/api_runtime.sh status
 bash scripts/api_runtime.sh logs
 ```
+
+## 🐳 Docker producción
+
+Se agregó un stack de producción separado para no mezclar con el `docker-compose.yml` de desarrollo.
+
+Archivos:
+- `Dockerfile.prod`
+- `docker-compose.prod.yml`
+- `.dockerignore`
+
+Comandos recomendados:
+
+```bash
+# Build + run API en producción
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Ver estado
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f api
+
+# Healthcheck
+curl http://127.0.0.1:8000/api/health
+
+# Apagar
+docker compose -f docker-compose.prod.yml down
+```
+
+Reinicio limpio (si hay estado raro):
+
+```bash
+docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Rollback rápido a imagen ya construida (sin rebuild):
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-build
+```
+
+Opcional: iniciar también `worker` (perfil separado):
+
+```bash
+docker compose -f docker-compose.prod.yml --profile worker up -d --build
+```
+
+Notas de hardening incluidas:
+- `init: true` (manejo de señales correcto)
+- `no-new-privileges`
+- `tmpfs /tmp`
+- rotación de logs (`max-size`, `max-file`)
+- `healthcheck` reforzado

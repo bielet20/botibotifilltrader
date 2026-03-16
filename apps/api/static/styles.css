@@ -540,6 +540,47 @@ th {
     padding-bottom: 0.85rem;
 }
 
+/* Keep Intelligence/Control text readable and avoid overlap in dynamic cards */
+#mainnetVisualHeader,
+#mainnetVisualDetail,
+#runtimeOpsOverviewStatus,
+#botTrafficLightHeader,
+#botTrafficLightList {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.45;
+}
+
+#mainnetVisualGrid,
+#intelligenceTopSummary,
+#botTrafficLightSummary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 10px;
+    align-items: stretch;
+}
+
+#mainnetVisualGrid > div,
+#intelligenceTopSummary > div,
+#botTrafficLightSummary > div {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.control-center-card .institutional-table th,
+.control-center-card .institutional-table td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+}
+
+.control-center-card .institutional-table td:last-child {
+    min-width: 320px;
+}
+
 /* Tab Sections */
 .tab-content {
     display: none;
@@ -622,6 +663,13 @@ main.sidebar-collapsed {
 .scrollable-table-container {
     max-height: 400px;
     overflow-y: auto;
+    padding-right: 8px;
+}
+
+.scrollable-table-container--large {
+    max-height: 65vh;
+    overflow-y: auto;
+    overflow-x: auto;
     padding-right: 8px;
 }
 
@@ -995,6 +1043,16 @@ tr:hover {
 
     .edit-bot-modal-grid {
         grid-template-columns: 1fr;
+    }
+
+    #mainnetVisualGrid,
+    #intelligenceTopSummary,
+    #botTrafficLightSummary {
+        grid-template-columns: 1fr !important;
+    }
+
+    .control-center-card .institutional-table td:last-child {
+        min-width: 260px;
     }
 }
 

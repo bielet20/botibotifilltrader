@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+reports/*.csv
+reports/*.json
+reports/*.jsonl
+reports/*.log
+*.ipynb
+frontend/node_modules
+frontend/dist

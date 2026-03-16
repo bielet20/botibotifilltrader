@@ -22,6 +22,12 @@ class PositionSyncService:
             "closed_locally": 0
         }
 
+        # If exchange query failed, keep local state untouched to avoid false closures.
+        if exchange_positions is None:
+            results["sync_skipped"] = True
+            results["reason"] = "exchange_fetch_failed"
+            return results
+
         with SessionLocal() as db:
             # 1. Obtener todas las posiciones abiertas en DB local
             local_positions = db.query(PositionDB).filter(PositionDB.is_open == True).all()
@@ -110,11 +116,32 @@ class PositionSyncService:
                         print(f"[PositionSync] Reassigned position {symbol} from {old_bot_id} to {bot_id}")
                     elif existing_pos and bot_id == "ORPHAN":
                         # Position exists but no matching bot found
+                        existing_pos.current_price = ex_pos['current_price']
+                        existing_pos.unrealized_pnl = ex_pos['unrealized_pnl']
+                        existing_pos.quantity = ex_pos['quantity']
+                        existing_pos.leverage = ex_pos.get('leverage', 1.0)
+                        existing_pos.updated_at = datetime.utcnow()
                         results["orphans"].append(ex_pos)
+                        results["synchronized"] += 1
                     else:
                         # Nueva posición detectada
                         if bot_id == "ORPHAN":
+                            # Persist orphan positions so they are visible and controllable from the app.
+                            new_pos = PositionDB(
+                                bot_id="ORPHAN",
+                                symbol=symbol,
+                                side=ex_pos['side'],
+                                entry_price=ex_pos['entry_price'],
+                                quantity=ex_pos['quantity'],
+                                leverage=ex_pos.get('leverage', 1.0),
+                                current_price=ex_pos['current_price'],
+                                unrealized_pnl=ex_pos['unrealized_pnl'],
+                                is_open=True,
+                                meta={"source": "sync_orphan_discovery"}
+                            )
+                            db.add(new_pos)
                             results["orphans"].append(ex_pos)
+                            results["synchronized"] += 1
                         else:
                             new_pos = PositionDB(
                                 bot_id=bot_id,

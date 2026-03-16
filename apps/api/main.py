@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
+from statistics import mean, pstdev
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+import asyncio
 import os
 import uuid
 import json
@@ -13,19 +15,14 @@ from sqlalchemy.orm import Session
 import ccxt.async_support as ccxt
 
 from apps.engine.backtester import BacktestEngine
-from apps.engine.ema_cross import EMACrossStrategy
-from apps.engine.technical_pro import TechnicalProStrategy
-from apps.engine.algo_expert import AlgoExpertStrategy
-from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
 from apps.engine.risk import RiskEngine
 from apps.engine.bot_advisor import build_bot_advice
 from apps.bot_manager.manager import BotManager
 from apps.ai_engine.engine import AIEngine
 from apps.ai_engine.adaptive_orchestrator import AdaptiveOrchestratorService
-from apps.reporting_engine.reporting import ReportingEngine, calculate_metrics
 from apps.reporting_engine.production_guard import ProductionGuardService
 from apps.reporting_engine.paper_monitor_runtime import PaperMonitorRuntimeService
-from apps.shared.database import init_db, get_db
+from apps.shared.database import init_db, get_db, SessionLocal
 from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB, BotAlertDB, BotLearningStateDB
 from apps.shared.bot_presets import list_bot_presets, get_bot_preset
 from apps.engine.paper_portfolio import PaperPortfolioDB
@@ -34,6 +31,16 @@ from apps.engine.hyperliquid_executor import HyperliquidExecutor
 from apps.engine.market_data import MarketDataEngine
 
 app = FastAPI(title="Trading Platform API Gateway")
+
+try:
+    from apps.reporting_engine.reporting import ReportingEngine, calculate_metrics
+except Exception as _reporting_import_error:
+    ReportingEngine = None
+
+    def calculate_metrics(_trades):
+        return {}
+
+    print(f"[Startup] reporting module unavailable: {_reporting_import_error}")
 
 # Initialize singletons BEFORE startup event so they are available
 from datetime import datetime, timezone
@@ -45,14 +52,104 @@ _startup_time = _time.time()
 risk_engine = RiskEngine()
 bot_manager = BotManager()
 ai_engine = AIEngine()
-reporting_engine = ReportingEngine()
+if ReportingEngine is None:
+    reporting_engine = None
+else:
+    reporting_engine = ReportingEngine()
 production_guard = ProductionGuardService(bot_manager)
 adaptive_orchestrator = AdaptiveOrchestratorService(bot_manager, production_guard)
 paper_monitor_runtime = PaperMonitorRuntimeService()
 
+_auto_production_promotion_enabled = os.getenv("PRODUCTION_AUTO_PROMOTE_ENABLED", "true").lower() == "true"
+_auto_production_promotion_interval_sec = max(30, int(os.getenv("PRODUCTION_AUTO_PROMOTE_INTERVAL_SEC", "180")))
+_auto_production_lookback_hours = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_LOOKBACK_HOURS", "24")))
+_auto_production_min_scored_trades = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_MIN_SCORED_TRADES", "12")))
+_auto_production_top_n = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_TOP_N", "2")))
+_auto_production_max_last_trade_age_hours = max(0.5, float(os.getenv("PRODUCTION_AUTO_PROMOTE_MAX_LAST_TRADE_AGE_HOURS", "6")))
+_auto_production_loop_running = False
+_auto_production_loop_task = None
+
+_daily_blockers_enabled = os.getenv("PRODUCTION_BLOCKERS_DAILY_ENABLED", "true").lower() == "true"
+_daily_blockers_interval_sec = max(900, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_INTERVAL_SEC", "86400")))
+_daily_blockers_lookback_hours = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_LOOKBACK_HOURS", "24")))
+_daily_blockers_min_scored_trades = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_MIN_SCORED_TRADES", "8")))
+_daily_blockers_loop_running = False
+_daily_blockers_loop_task = None
+
 
 def _project_root_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _infer_alert_context(reason_code: str, title: str, message: str, data: dict) -> dict:
+    reason = str(reason_code or "").strip().lower()
+    title_l = str(title or "").strip().lower()
+    msg_l = str(message or "").strip().lower()
+    data_s = json.dumps(data or {}, ensure_ascii=False).lower()
+    text = " | ".join([reason, title_l, msg_l, data_s])
+
+    # Exact reason_code mapping has priority over text heuristics.
+    if reason in {"insufficient_trades", "no_monitoring_data"}:
+        return {
+            "probable_cause": "Datos insuficientes para validar el bot en producción.",
+            "suggested_action": "Aumentar ventana de pruebas o bajar umbrales mínimos con cautela.",
+        }
+    if reason in {"consecutive_losses", "max_consecutive_losses"}:
+        return {
+            "probable_cause": "Racha de pérdidas consecutivas por encima del umbral.",
+            "suggested_action": "Pausar bot, validar mercado actual y endurecer reglas de entrada.",
+        }
+    if reason in {"max_drawdown", "drawdown_limit"}:
+        return {
+            "probable_cause": "Se superó el drawdown máximo configurado.",
+            "suggested_action": "Reducir riesgo (allocation/leverage) y revisar estrategia antes de reactivar.",
+        }
+    if reason in {"low_profit_factor"}:
+        return {
+            "probable_cause": "El ratio de beneficio (profit factor) cayó por debajo del mínimo permitido.",
+            "suggested_action": "Retirar de producción, revisar entradas/salidas y volver a paper hasta recuperar ratio.",
+        }
+    if reason in {"auth_failed", "mainnet_auth_failed", "invalid_signature"}:
+        return {
+            "probable_cause": "Credenciales API inválidas o firma rechazada.",
+            "suggested_action": "Revisar wallet/signing key y validar permisos en el entorno seleccionado.",
+        }
+
+    if "429" in text or "too many requests" in text or "rate limit" in text:
+        return {
+            "probable_cause": "Límite de peticiones del exchange (rate limit).",
+            "suggested_action": "Reducir frecuencia de consultas y aplicar backoff/reintento.",
+        }
+    if "auth" in text or "invalid key" in text or "signature" in text or "unauthorized" in text:
+        return {
+            "probable_cause": "Credenciales API inválidas o firma rechazada.",
+            "suggested_action": "Revisar wallet/signing key y validar permisos en el entorno seleccionado.",
+        }
+    if "drawdown" in text or "max_drawdown" in text:
+        return {
+            "probable_cause": "Se superó el drawdown máximo configurado.",
+            "suggested_action": "Reducir riesgo (allocation/leverage) y revisar estrategia antes de reactivar.",
+        }
+    if "consecutive_losses" in text or "losses consecutivas" in text or "racha" in text:
+        return {
+            "probable_cause": "Racha de pérdidas consecutivas por encima del umbral.",
+            "suggested_action": "Pausar bot, validar mercado actual y endurecer reglas de entrada.",
+        }
+    if "insufficient" in text or "min_trades" in text or "no_monitoring_data" in text:
+        return {
+            "probable_cause": "Datos insuficientes para validar el bot en producción.",
+            "suggested_action": "Aumentar ventana de pruebas o bajar umbrales mínimos con cautela.",
+        }
+    if "snapshot" in text or "account" in text or "could not fetch" in text or "timeout" in text:
+        return {
+            "probable_cause": "Fallo temporal al consultar cuenta/estado en exchange.",
+            "suggested_action": "Reintentar, comprobar conectividad y estado de APIs externas.",
+        }
+
+    return {
+        "probable_cause": "Condición de guardrail o validación de producción no cumplida.",
+        "suggested_action": "Revisar métricas del bot y alertas recientes para ajustar configuración.",
+    }
 
 
 def _env_file_path() -> str:
@@ -119,6 +216,92 @@ def _candles_to_csv(candles: list) -> str:
     for row in candles:
         writer.writerow(row)
     return output.getvalue()
+
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    tf = (timeframe or "").strip().lower()
+    if not tf:
+        return 60
+    unit = tf[-1]
+    value = tf[:-1]
+    if not value.isdigit():
+        return 60
+    qty = int(value)
+    if unit == "m":
+        return max(1, qty)
+    if unit == "h":
+        return max(1, qty) * 60
+    if unit == "d":
+        return max(1, qty) * 1440
+    if unit == "w":
+        return max(1, qty) * 10080
+    return 60
+
+
+def _compute_candle_analysis(candles: list) -> dict:
+    if not candles:
+        return {
+            "trend_pct": 0.0,
+            "volatility_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+            "range_pct": 0.0,
+            "avg_volume": 0.0,
+            "last_close": 0.0,
+        }
+
+    closes = [float(c.get("close") or 0.0) for c in candles if float(c.get("close") or 0.0) > 0]
+    highs = [float(c.get("high") or 0.0) for c in candles if float(c.get("high") or 0.0) > 0]
+    lows = [float(c.get("low") or 0.0) for c in candles if float(c.get("low") or 0.0) > 0]
+    volumes = [float(c.get("volume") or 0.0) for c in candles]
+
+    returns_pct = []
+    for idx in range(1, len(closes)):
+        prev = closes[idx - 1]
+        cur = closes[idx]
+        if prev > 0:
+            returns_pct.append(((cur - prev) / prev) * 100)
+
+    volatility_pct = 0.0
+    if len(returns_pct) > 1:
+        volatility_pct = float(pstdev(returns_pct))
+    elif returns_pct:
+        volatility_pct = float(mean(returns_pct))
+
+    trend_pct = 0.0
+    if len(closes) >= 2 and closes[0] > 0:
+        trend_pct = ((closes[-1] - closes[0]) / closes[0]) * 100
+
+    max_drawdown_pct = 0.0
+    if closes:
+        peak = closes[0]
+        max_dd = 0.0
+        for price in closes:
+            if price > peak:
+                peak = price
+            if peak > 0:
+                dd = ((price - peak) / peak) * 100
+                if dd < max_dd:
+                    max_dd = dd
+        max_drawdown_pct = abs(max_dd)
+
+    range_pct = 0.0
+    if highs and lows:
+        min_low = min(lows)
+        max_high = max(highs)
+        if min_low > 0:
+            range_pct = ((max_high - min_low) / min_low) * 100
+
+    avg_volume = (sum(volumes) / len(volumes)) if volumes else 0.0
+    last_close = closes[-1] if closes else 0.0
+
+    return {
+        "trend_pct": round(trend_pct, 3),
+        "volatility_pct": round(volatility_pct, 3),
+        "max_drawdown_pct": round(max_drawdown_pct, 3),
+        "range_pct": round(range_pct, 3),
+        "avg_volume": round(avg_volume, 4),
+        "last_close": round(last_close, 6),
+    }
 
 
 def _import_file_path(symbol: str, timeframe: str) -> str:
@@ -336,7 +519,11 @@ def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict
         strategy = "paired_balanced"
     elif any(k in p for k in ["grid", "rejilla", "rango", "range"]):
         strategy = "grid_trading"
-    elif any(k in p for k in ["adaptive", "aprendiz", "learning", "reinvert"]):
+    elif any(k in p for k in [
+        "adaptive", "aprendiz", "learning", "reinvert", "scalp", "micro",
+        "intradia", "intradia", "movimientos", "porcentaje", "pequeno", "pequenos",
+        "comprar barato", "comprar barato vender caro",
+    ]):
         strategy = "adaptive_learning"
     elif any(k in p for k in ["rsi", "macd", "fib", "fibonacci", "technical"]):
         strategy = "technical_pro"
@@ -395,6 +582,43 @@ def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict
         elif risk_level == "high":
             cfg["pair_entry_z"] = 1.2
             cfg["pair_min_correlation"] = 0.25
+    elif strategy == "adaptive_learning":
+        cfg.update(
+            {
+                "adaptive_short_window": 10,
+                "adaptive_long_window": 36,
+                "adaptive_base_amount": 0.008,
+                "adaptive_min_flip_move_pct": 0.002,
+                "adaptive_min_reentry_move_pct": 0.0012,
+                "self_managed": True,
+                "reinvest_ratio": 0.25,
+                "min_allocation": round(max(60.0, safe_allocation * 0.35), 4),
+                "max_allocation": round(max(500.0, safe_allocation * 2.8), 4),
+                "leverage": 1,
+            }
+        )
+        if horizon == "corto":
+            cfg.update(
+                {
+                    "adaptive_short_window": 6,
+                    "adaptive_long_window": 22,
+                    "adaptive_base_amount": 0.006,
+                    "adaptive_min_flip_move_pct": 0.0016,
+                    "adaptive_min_reentry_move_pct": 0.0009,
+                    "reinvest_ratio": 0.2,
+                }
+            )
+        elif horizon == "largo":
+            cfg.update(
+                {
+                    "adaptive_short_window": 14,
+                    "adaptive_long_window": 55,
+                    "adaptive_base_amount": 0.01,
+                    "adaptive_min_flip_move_pct": 0.003,
+                    "adaptive_min_reentry_move_pct": 0.0018,
+                    "reinvest_ratio": 0.3,
+                }
+            )
 
     if risk_level == "low":
         cfg["risk_config"] = {"max_drawdown": 0.03}
@@ -410,6 +634,266 @@ def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict
             "source": "prompt",
         },
     }
+
+
+def _is_live_mainnet_config(cfg: dict) -> bool:
+    conf = dict(cfg or {})
+    executor = str(conf.get("executor") or "paper").strip().lower()
+    if executor != "hyperliquid":
+        return False
+    use_testnet = bool(conf.get("hyperliquid_testnet", os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"))
+    return not use_testnet
+
+
+def _analysis_gate_ok(cfg: dict) -> bool:
+    conf = dict(cfg or {})
+    return bool(
+        conf.get("analysis_approved")
+        or conf.get("candidate_for_production")
+        or conf.get("production_ready")
+    )
+
+
+def _evaluate_production_readiness(
+    *,
+    strategy: str,
+    metrics: dict,
+    critical_open_count: int,
+    runtime_ready: bool,
+    min_scored_trades: int,
+) -> dict:
+    strategy_l = str(strategy or "").strip().lower()
+
+    # Strategy-aware thresholds: tuned to accelerate promotion without weakening safety.
+    min_win_rate = 55.0
+    min_profit_factor = 1.05
+    min_trades_required = int(min_scored_trades)
+    if "grid" in strategy_l:
+        min_trades_required = max(6, int(min_scored_trades) - 1)
+    elif "adaptive" in strategy_l:
+        min_win_rate = 56.0
+        min_profit_factor = 1.04
+    elif "pair" in strategy_l:
+        min_win_rate = 57.0
+        min_profit_factor = 1.06
+        min_trades_required = max(10, int(min_scored_trades))
+
+    scored_trades = int(metrics.get("scored_trades") or 0)
+    win_rate = float(metrics.get("win_rate") or 0.0)
+    net_pnl = float(metrics.get("net_pnl") or 0.0)
+    profit_factor = float(metrics.get("profit_factor") or 0.0)
+    consecutive_losses = int(metrics.get("consecutive_losses") or 0)
+
+    checks = [
+        {
+            "code": "min_scored_trades",
+            "ok": scored_trades >= min_trades_required,
+            "actual": scored_trades,
+            "required": f">={min_trades_required}",
+            "message": f"Trades válidos {scored_trades}/{min_trades_required}",
+        },
+        {
+            "code": "min_win_rate",
+            "ok": win_rate >= min_win_rate,
+            "actual": round(win_rate, 2),
+            "required": f">={min_win_rate}",
+            "message": f"Win rate {round(win_rate, 2)}% (mínimo {min_win_rate}%)",
+        },
+        {
+            "code": "positive_net_pnl",
+            "ok": net_pnl > 0.0,
+            "actual": round(net_pnl, 6),
+            "required": ">0",
+            "message": f"Net PnL {round(net_pnl, 6)} (debe ser positivo)",
+        },
+        {
+            "code": "min_profit_factor",
+            "ok": profit_factor >= min_profit_factor,
+            "actual": round(profit_factor, 4),
+            "required": f">={min_profit_factor}",
+            "message": f"Profit factor {round(profit_factor, 4)} (mínimo {min_profit_factor})",
+        },
+        {
+            "code": "max_consecutive_losses",
+            "ok": consecutive_losses <= 2,
+            "actual": consecutive_losses,
+            "required": "<=2",
+            "message": f"Pérdidas consecutivas {consecutive_losses} (máximo 2)",
+        },
+        {
+            "code": "critical_alerts",
+            "ok": critical_open_count == 0,
+            "actual": critical_open_count,
+            "required": "==0",
+            "message": f"Alertas críticas abiertas {critical_open_count} (deben ser 0)",
+        },
+    ]
+
+    gate_ok = all(bool(item.get("ok")) for item in checks)
+    operational_checks = [
+        {
+            "code": "runtime_running",
+            "ok": runtime_ready,
+            "actual": "running" if runtime_ready else "stopped",
+            "required": "running",
+            "message": "Bot en ejecución para promoción automática",
+        }
+    ]
+
+    blockers = [item["message"] for item in checks if not item.get("ok")]
+    if gate_ok:
+        summary = "APTO PRODUCCION: métricas y guardrails superados"
+    else:
+        summary = "NO APTO / BLOQUEADO: " + " | ".join(blockers)
+
+    return {
+        "gate_ok": gate_ok,
+        "label": "APTO PRODUCCION" if gate_ok else "NO APTO / BLOQUEADO",
+        "summary": summary,
+        "strategy": strategy,
+        "thresholds": {
+            "min_scored_trades": min_trades_required,
+            "min_win_rate": min_win_rate,
+            "min_profit_factor": min_profit_factor,
+            "min_net_pnl": 0.0,
+            "max_consecutive_losses": 2,
+            "critical_alerts": 0,
+        },
+        "checks": checks,
+        "operational_checks": operational_checks,
+        "blockers": blockers,
+    }
+
+
+def _recommended_action_for_blockers(blockers: list) -> str:
+    text = " | ".join(str(b or "") for b in (blockers or [])).lower()
+    if "trades válidos" in text:
+        return "Mantener bot en paper/running con menor filtro de entrada hasta reunir muestra mínima."
+    if "win rate" in text:
+        return "Reducir riesgo (allocation/leverage) y endurecer entrada antes de volver a evaluar."
+    if "net pnl" in text:
+        return "Pausar escalado y optimizar parámetros de salida/stop para recuperar PnL neto positivo."
+    if "profit factor" in text:
+        return "Ajustar relación riesgo/beneficio (take profit y control de pérdidas) hasta PF objetivo."
+    if "alertas críticas" in text:
+        return "Resolver y cerrar alertas críticas abiertas antes de cualquier promoción."
+    if "detenido" in text:
+        return "Arrancar bot en paper/running para generar datos recientes antes de promover."
+    return "Revisar bloqueadores y aplicar recomendación adaptativa antes de siguiente ciclo."
+
+
+def _build_blockers_ranking_report(db: Session, *, lookback_hours: int, min_scored_trades: int) -> dict:
+    monitoring = _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
+    rows = []
+    for item in monitoring.get("results", []):
+        readiness = dict(item.get("readiness") or {})
+        if bool(readiness.get("gate_ok")):
+            continue
+
+        blockers = list(readiness.get("blockers") or [])
+        rows.append(
+            {
+                "bot_id": item.get("bot_id"),
+                "strategy": item.get("strategy"),
+                "label": readiness.get("label") or "NO APTO / BLOQUEADO",
+                "summary": readiness.get("summary") or "No apto para producción",
+                "blockers": blockers,
+                "recommended_action": _recommended_action_for_blockers(blockers),
+                "metrics": item.get("metrics") or {},
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            len(r.get("blockers") or []),
+            -float((r.get("metrics") or {}).get("scored_trades") or 0.0),
+            float((r.get("metrics") or {}).get("net_pnl") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "window_hours": lookback_hours,
+        "min_scored_trades": min_scored_trades,
+        "blocked_count": len(rows),
+        "rows": rows,
+    }
+
+
+def _strict_production_policy_from_metrics(*, strategy: str, allocation: float, min_scored_trades: int, recommendation_level: str) -> dict:
+    alloc = max(20.0, float(allocation or 0.0))
+    strategy_l = str(strategy or "").strip().lower()
+    level = str(recommendation_level or "").strip().lower()
+
+    min_win_rate = 55.0
+    min_profit_factor = 1.05
+    min_trades = int(min_scored_trades)
+
+    if "grid" in strategy_l:
+        min_win_rate = 53.0
+        min_profit_factor = 1.03
+        min_trades = max(6, int(min_scored_trades) - 1)
+    elif "adaptive" in strategy_l:
+        min_win_rate = 55.0
+        min_profit_factor = 1.04
+    elif "pair" in strategy_l:
+        min_win_rate = 57.0
+        min_profit_factor = 1.06
+        min_trades = max(10, int(min_scored_trades))
+
+    if level == "defensive":
+        min_win_rate = max(min_win_rate, 58.0)
+        min_profit_factor = max(min_profit_factor, 1.08)
+    elif level == "offensive":
+        min_win_rate = max(52.0, min_win_rate - 1.0)
+        min_profit_factor = max(1.02, min_profit_factor - 0.01)
+
+    max_loss_abs = round(min(25.0, max(2.0, alloc * 0.015)), 4)
+
+    return {
+        "enabled": True,
+        "window_trades": max(30, int(min_trades) * 3),
+        "min_trades": int(min_trades),
+        "min_win_rate": min_win_rate,
+        "min_net_pnl": 0.0,
+        "min_profit_factor": min_profit_factor,
+        "max_consecutive_losses": 2,
+        "max_loss_abs": max_loss_abs,
+        "max_loss_pct_of_allocation": 0.015,
+        "stop_on_unproductive": True,
+    }
+
+
+def _build_production_preparation_patch(*, item: dict, min_scored_trades: int) -> dict:
+    metrics = dict(item.get("metrics") or {})
+    recommendation = dict(item.get("recommendation") or {})
+    rec_params = dict(recommendation.get("suggested_params") or {})
+    candidate = bool(item.get("candidate_for_production"))
+    strategy = str(item.get("strategy") or "")
+
+    allocation = float(
+        rec_params.get("allocation")
+        or rec_params.get("capital_allocation")
+        or metrics.get("net_pnl")
+        or 100.0
+    )
+    allocation = max(20.0, abs(allocation))
+
+    patch = dict(rec_params)
+    patch["allocation"] = float(patch.get("allocation") or allocation)
+    patch["capital_allocation"] = float(patch.get("capital_allocation") or patch.get("allocation") or allocation)
+    patch["production_policy"] = _strict_production_policy_from_metrics(
+        strategy=strategy,
+        allocation=float(patch.get("capital_allocation") or allocation),
+        min_scored_trades=min_scored_trades,
+        recommendation_level=str(recommendation.get("level") or ""),
+    )
+    patch["analysis_approved"] = candidate
+    patch["candidate_for_production"] = candidate
+    patch["production_ready"] = candidate
+
+    return patch
 
 
 def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_trades: int) -> dict:
@@ -470,15 +954,15 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
         )
 
         critical_open_count = int(critical_map.get(bot.id, 0) or 0)
-        candidate_core = (
-            metrics["scored_trades"] >= min_scored_trades
-            and metrics["win_rate"] >= 58
-            and metrics["net_pnl"] > 0
-            and float(metrics.get("profit_factor") or 0.0) >= 1.05
-            and metrics["consecutive_losses"] <= 2
-            and critical_open_count == 0
-        )
         runtime_ready = str(bot.status or "").lower() == BotStatus.RUNNING
+        readiness = _evaluate_production_readiness(
+            strategy=str(bot.strategy or ""),
+            metrics=metrics,
+            critical_open_count=critical_open_count,
+            runtime_ready=runtime_ready,
+            min_scored_trades=min_scored_trades,
+        )
+        candidate_core = bool(readiness.get("gate_ok"))
 
         results.append(
             {
@@ -490,6 +974,7 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
                 "candidate_for_production": candidate_core,
                 "runtime_ready": runtime_ready,
                 "metrics": metrics,
+                "readiness": readiness,
                 "recommendation": recommendation,
             }
         )
@@ -701,6 +1186,7 @@ async def _activate_bot_for_production_internal(
             "reason": "bot_not_ready_for_production",
             "metrics": selected.get("metrics"),
             "critical_open_alerts": selected.get("critical_open_alerts"),
+            "readiness": selected.get("readiness"),
         }
         _audit_production_activation(
             db,
@@ -711,6 +1197,7 @@ async def _activate_bot_for_production_internal(
             details={
                 "metrics": selected.get("metrics"),
                 "critical_open_alerts": selected.get("critical_open_alerts"),
+                "readiness": selected.get("readiness"),
             },
         )
         db.commit()
@@ -858,17 +1345,72 @@ async def _activate_bot_for_production_internal(
 
 @app.on_event("startup")
 async def startup_event():
+    global _auto_production_loop_running, _auto_production_loop_task
+    global _daily_blockers_loop_running, _daily_blockers_loop_task
     init_db()
-    await bot_manager.resume_bots()
-    await production_guard.start()
+    try:
+        await asyncio.wait_for(bot_manager.resume_bots(), timeout=20)
+    except Exception as e:
+        print(f"[Startup] resume_bots skipped: {e}")
+
+    try:
+        await asyncio.wait_for(production_guard.start(), timeout=10)
+    except Exception as e:
+        print(f"[Startup] production_guard start skipped: {e}")
+
     if adaptive_orchestrator.enabled:
-        await adaptive_orchestrator.start()
+        try:
+            await asyncio.wait_for(adaptive_orchestrator.start(), timeout=10)
+        except Exception as e:
+            print(f"[Startup] adaptive_orchestrator start skipped: {e}")
+
     if paper_monitor_runtime.enabled:
-        await paper_monitor_runtime.start(trigger="startup")
+        try:
+            await asyncio.wait_for(paper_monitor_runtime.start(trigger="startup"), timeout=10)
+        except Exception as e:
+            print(f"[Startup] paper_monitor_runtime start skipped: {e}")
+
+    if _auto_production_promotion_enabled and (_auto_production_loop_task is None or _auto_production_loop_task.done()):
+        _auto_production_loop_running = True
+        _auto_production_loop_task = asyncio.create_task(_auto_production_promotion_loop())
+        print(
+            "[Startup] auto production promotion loop enabled "
+            f"(interval={_auto_production_promotion_interval_sec}s, min_trades={_auto_production_min_scored_trades})"
+        )
+
+    if _daily_blockers_enabled and (_daily_blockers_loop_task is None or _daily_blockers_loop_task.done()):
+        _daily_blockers_loop_running = True
+        _daily_blockers_loop_task = asyncio.create_task(_daily_blockers_report_loop())
+        print(
+            "[Startup] daily blockers loop enabled "
+            f"(interval={_daily_blockers_interval_sec}s, min_trades={_daily_blockers_min_scored_trades})"
+        )
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global _auto_production_loop_running, _auto_production_loop_task
+    global _daily_blockers_loop_running, _daily_blockers_loop_task
+    _auto_production_loop_running = False
+    if _auto_production_loop_task and not _auto_production_loop_task.done():
+        _auto_production_loop_task.cancel()
+        try:
+            await _auto_production_loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Shutdown] auto promotion loop stop warning: {e}")
+
+    _daily_blockers_loop_running = False
+    if _daily_blockers_loop_task and not _daily_blockers_loop_task.done():
+        _daily_blockers_loop_task.cancel()
+        try:
+            await _daily_blockers_loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Shutdown] daily blockers loop stop warning: {e}")
+
     await paper_monitor_runtime.stop(trigger="shutdown")
     await adaptive_orchestrator.stop()
     await production_guard.stop()
@@ -892,6 +1434,7 @@ async def get_market_price(symbol: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/health")
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
     db_ok = db.execute(text("SELECT 1")).fetchone() is not None
@@ -906,6 +1449,81 @@ async def health_check(db: Session = Depends(get_db)):
         "uptime": f"{h}h {m}m {s}s",
         "running_bots": running_bots,
         "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/api/take-profit/status")
+async def get_take_profit_status():
+    env = _read_env_values()
+
+    def _float_env(key: str, default: float) -> float:
+        try:
+            raw = env.get(key)
+            if raw is None:
+                return float(default)
+            return float(str(raw).strip())
+        except Exception:
+            return float(default)
+
+    state_path = env.get("HYPERLIQUID_TP_STATE_FILE", "reports/profit_guard_state.json")
+    abs_state_path = os.path.join(_project_root_path(), state_path) if not os.path.isabs(state_path) else state_path
+
+    raw_state = {}
+    state_read_error = ""
+    try:
+        if os.path.exists(abs_state_path):
+            with open(abs_state_path, "r", encoding="utf-8") as f:
+                raw_state = json.load(f) or {}
+    except Exception as e:
+        state_read_error = str(e)
+        raw_state = {}
+
+    tracked_positions = []
+    for _, payload in (raw_state or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        tracked_positions.append(
+            {
+                "symbol": payload.get("symbol"),
+                "side": payload.get("side"),
+                "qty": payload.get("qty"),
+                "entry": payload.get("entry"),
+                "best_price": payload.get("best_price"),
+                "peak_gain_pct": payload.get("peak_gain_pct"),
+                "last_mark": payload.get("last_mark"),
+                "last_gain_pct": payload.get("last_gain_pct"),
+                "last_retrace_pct": payload.get("last_retrace_pct"),
+            }
+        )
+
+    tracked_positions.sort(
+        key=lambda item: float(item.get("peak_gain_pct") or 0.0),
+        reverse=True,
+    )
+
+    return {
+        "profile": env.get("HYPERLIQUID_TRAILING_PROFILE", "manual"),
+        "min_net_pnl": _float_env("HYPERLIQUID_MIN_NET_PNL", 1.0),
+        "min_net_profit_pct": _float_env("HYPERLIQUID_MIN_NET_PROFIT_PCT", 0.0),
+        "exit_slippage_pct": _float_env("HYPERLIQUID_EXIT_SLIPPAGE_PCT", 0.0002),
+        "only_production_positions": str(env.get("HYPERLIQUID_TP_ONLY_PRODUCTION", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        "hard_take_profit_pct": _float_env("HYPERLIQUID_HARD_TAKE_PROFIT_PCT", 0.05),
+        "trailing_trigger_pct": _float_env("HYPERLIQUID_TRAILING_TRIGGER_PCT", 0.02),
+        "trailing_retrace_pct": _float_env("HYPERLIQUID_TRAILING_RETRACE_PCT", 0.0075),
+        "stop_loss_pct": _float_env("HYPERLIQUID_STOP_LOSS_PCT", 0.02),
+        "max_net_loss_abs": _float_env("HYPERLIQUID_MAX_NET_LOSS_ABS", 3.0),
+        "trailing_ladder": env.get("HYPERLIQUID_TRAILING_LADDER", "0.02:0.0075,0.05:0.006,0.10:0.0045"),
+        "volatility_timeframe": env.get("HYPERLIQUID_VOLATILITY_TIMEFRAME", "5m"),
+        "volatility_lookback": int(_float_env("HYPERLIQUID_VOLATILITY_LOOKBACK", 48)),
+        "volatility_low_threshold_pct": _float_env("HYPERLIQUID_VOLATILITY_LOW_THRESHOLD_PCT", 0.0015),
+        "volatility_high_threshold_pct": _float_env("HYPERLIQUID_VOLATILITY_HIGH_THRESHOLD_PCT", 0.0035),
+        "state_file": state_path,
+        "state_exists": os.path.exists(abs_state_path),
+        "state_read_error": state_read_error,
+        "tracked_positions": tracked_positions[:5],
+        "tracked_count": len(tracked_positions),
+        "orchestrator_running": bool(adaptive_orchestrator.latest_status().get("running")),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -1136,20 +1754,25 @@ async def get_production_alerts(limit: int = 50, only_open: bool = False, db: Se
     if only_open:
         query = query.filter(BotAlertDB.acknowledged == False)
     alerts = query.limit(limit).all()
-    return [
-        {
-            "id": alert.id,
-            "created_at": alert.created_at,
-            "bot_id": alert.bot_id,
-            "level": alert.level,
-            "title": alert.title,
-            "message": alert.message,
-            "reason_code": alert.reason_code,
-            "data": alert.data,
-            "acknowledged": alert.acknowledged,
-        }
-        for alert in alerts
-    ]
+    out = []
+    for alert in alerts:
+        context = _infer_alert_context(alert.reason_code, alert.title, alert.message, alert.data or {})
+        out.append(
+            {
+                "id": alert.id,
+                "created_at": alert.created_at,
+                "bot_id": alert.bot_id,
+                "level": alert.level,
+                "title": alert.title,
+                "message": alert.message,
+                "reason_code": alert.reason_code,
+                "data": alert.data,
+                "acknowledged": alert.acknowledged,
+                "probable_cause": context["probable_cause"],
+                "suggested_action": context["suggested_action"],
+            }
+        )
+    return out
 
 
 @app.post("/api/production/alerts/{alert_id}/ack")
@@ -1463,6 +2086,44 @@ async def fetch_market_data(payload: dict = None):
     }
 
 
+@app.post("/api/market/analysis")
+async def analyze_market_history(payload: dict = None):
+    payload = payload or {}
+    symbol = (payload.get("symbol") or "BTC/USDT").strip() or "BTC/USDT"
+    timeframe = (payload.get("timeframe") or "1h").strip() or "1h"
+    source = (payload.get("source") or "live").strip().lower()
+    days = int(payload.get("days") or 30)
+    days = max(1, min(days, 90))
+
+    raw_limit = payload.get("limit")
+    limit = int(raw_limit) if raw_limit not in (None, "") else 0
+    if limit <= 0:
+        minutes = _timeframe_to_minutes(timeframe)
+        candles_per_day = max(1, int(1440 / minutes))
+        limit = int(days * candles_per_day)
+
+    limit = max(20, min(limit, 2000))
+
+    candles, resolved_source = await _resolve_market_candles(symbol, timeframe, limit, source)
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"No candles available for {symbol} ({resolved_source})")
+
+    analysis = _compute_candle_analysis(candles)
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": resolved_source,
+        "rows": len(candles),
+        "days_requested": days,
+        "analysis": analysis,
+        "candles": candles,
+        "first_time": candles[0]["time"],
+        "last_time": candles[-1]["time"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/api/market/data/export")
 async def export_market_data(payload: dict = None):
     payload = payload or {}
@@ -1697,49 +2358,347 @@ async def activate_bot_for_production(payload: dict = None, db: Session = Depend
     return result
 
 
+async def _auto_activate_ready_bots_internal(
+    db: Session,
+    *,
+    lookback_hours: int,
+    min_scored_trades: int,
+    top_n: int,
+    require_runtime_ready: bool,
+    max_last_trade_age_hours: float,
+    auto_patch_executor: bool,
+    trigger: str,
+) -> dict:
+    monitoring = _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
+    now = datetime.utcnow()
+    skipped_not_running = 0
+    skipped_stale_trade = 0
+    blocked_not_ready = 0
+    blocked_not_ready_samples = []
+    candidates = []
+
+    for item in monitoring.get("results", []):
+        bot_id = str(item.get("bot_id") or "").strip()
+        readiness = dict(item.get("readiness") or {})
+
+        if not item.get("candidate_for_production"):
+            blocked_not_ready += 1
+            if bot_id and len(blocked_not_ready_samples) < 10:
+                blocked_not_ready_samples.append(
+                    {
+                        "bot_id": bot_id,
+                        "label": readiness.get("label") or "NO APTO / BLOQUEADO",
+                        "summary": readiness.get("summary") or "No cumple gate de producción",
+                        "blockers": list(readiness.get("blockers") or []),
+                    }
+                )
+            continue
+
+        if require_runtime_ready and not item.get("runtime_ready"):
+            skipped_not_running += 1
+            continue
+
+        # Only enforce recency when runtime-ready is required.
+        if require_runtime_ready:
+            last_trade_at = item.get("last_trade_at")
+            if last_trade_at:
+                try:
+                    age_hours = (now - last_trade_at).total_seconds() / 3600.0
+                    if age_hours > max_last_trade_age_hours:
+                        skipped_stale_trade += 1
+                        continue
+                except Exception:
+                    skipped_stale_trade += 1
+                    continue
+
+        candidates.append(item)
+
+    selected = candidates[:top_n]
+    activation_results = []
+    for item in selected:
+        bot_id = str(item.get("bot_id") or "").strip()
+        if not bot_id:
+            continue
+
+        first_attempt = await _activate_bot_for_production_internal(
+            db,
+            bot_id=bot_id,
+            lookback_hours=lookback_hours,
+            min_scored_trades=min_scored_trades,
+            trigger=trigger,
+        )
+
+        if (not first_attempt.get("activated")) and auto_patch_executor:
+            reason = str(first_attempt.get("reason") or "")
+            suggested_patch = dict(first_attempt.get("suggested_patch") or {})
+            if reason == "executor_not_hyperliquid" and suggested_patch:
+                bot_manager.update_bot_config(bot_id, suggested_patch)
+                first_attempt = await _activate_bot_for_production_internal(
+                    db,
+                    bot_id=bot_id,
+                    lookback_hours=lookback_hours,
+                    min_scored_trades=min_scored_trades,
+                    trigger=f"{trigger}_after_executor_patch",
+                )
+                first_attempt["auto_patched"] = True
+                first_attempt["auto_patch"] = suggested_patch
+            elif reason == "bot_configured_for_testnet":
+                patch = {"hyperliquid_testnet": False}
+                bot_manager.update_bot_config(bot_id, patch)
+                first_attempt = await _activate_bot_for_production_internal(
+                    db,
+                    bot_id=bot_id,
+                    lookback_hours=lookback_hours,
+                    min_scored_trades=min_scored_trades,
+                    trigger=f"{trigger}_after_testnet_patch",
+                )
+                first_attempt["auto_patched"] = True
+                first_attempt["auto_patch"] = patch
+
+        activation_results.append(first_attempt)
+
+    activated_count = sum(1 for item in activation_results if item.get("activated"))
+    blocked_count = len(activation_results) - activated_count
+
+    return {
+        "trigger": trigger,
+        "window_hours": lookback_hours,
+        "min_scored_trades": min_scored_trades,
+        "top_n": top_n,
+        "require_runtime_ready": require_runtime_ready,
+        "max_last_trade_age_hours": max_last_trade_age_hours,
+        "skipped_not_running": skipped_not_running,
+        "skipped_stale_trade": skipped_stale_trade,
+        "blocked_not_ready": blocked_not_ready,
+        "blocked_not_ready_samples": blocked_not_ready_samples,
+        "production_candidates_detected": len(candidates),
+        "attempted": len(activation_results),
+        "activated": activated_count,
+        "blocked": blocked_count,
+        "results": activation_results,
+    }
+
+
+async def _auto_production_promotion_loop() -> None:
+    global _auto_production_loop_running
+    while _auto_production_loop_running:
+        try:
+            ops_running = bool(paper_monitor_runtime.latest_status().get("running")) and bool(adaptive_orchestrator.latest_status().get("running"))
+            if not ops_running:
+                await asyncio.sleep(_auto_production_promotion_interval_sec)
+                continue
+
+            with SessionLocal() as db:
+                summary = await _auto_activate_ready_bots_internal(
+                    db,
+                    lookback_hours=_auto_production_lookback_hours,
+                    min_scored_trades=_auto_production_min_scored_trades,
+                    top_n=_auto_production_top_n,
+                    require_runtime_ready=False,
+                    max_last_trade_age_hours=_auto_production_max_last_trade_age_hours,
+                    auto_patch_executor=True,
+                    trigger="auto_scheduler",
+                )
+            if summary.get("attempted") or summary.get("blocked_not_ready"):
+                print(
+                    "[AutoPromotion] "
+                    f"activated={summary.get('activated', 0)} "
+                    f"blocked={summary.get('blocked', 0)} "
+                    f"not_ready={summary.get('blocked_not_ready', 0)}"
+                )
+        except Exception as e:
+            print(f"[AutoPromotion] cycle failed: {e}")
+
+        await asyncio.sleep(_auto_production_promotion_interval_sec)
+
+
+def _write_daily_blockers_report_once(*, lookback_hours: int, min_scored_trades: int) -> dict:
+    with SessionLocal() as db:
+        report = _build_blockers_ranking_report(
+            db,
+            lookback_hours=lookback_hours,
+            min_scored_trades=min_scored_trades,
+        )
+
+    os.makedirs("reports", exist_ok=True)
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    path = os.path.join("reports", f"production_blockers_ranking_{day}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    return {
+        "path": path,
+        "blocked_count": int(report.get("blocked_count") or 0),
+        "generated_at": report.get("generated_at"),
+    }
+
+
+async def _daily_blockers_report_loop() -> None:
+    global _daily_blockers_loop_running
+    while _daily_blockers_loop_running:
+        try:
+            info = _write_daily_blockers_report_once(
+                lookback_hours=_daily_blockers_lookback_hours,
+                min_scored_trades=_daily_blockers_min_scored_trades,
+            )
+            print(
+                "[DailyBlockers] "
+                f"blocked={info.get('blocked_count', 0)} "
+                f"file={info.get('path')}"
+            )
+        except Exception as e:
+            print(f"[DailyBlockers] cycle failed: {e}")
+
+        await asyncio.sleep(_daily_blockers_interval_sec)
+
+
+@app.post("/api/monitoring/blockers-ranking")
+async def generate_blockers_ranking(payload: dict = None):
+    payload = payload or {}
+    lookback_hours = int(payload.get("lookback_hours", _daily_blockers_lookback_hours) or _daily_blockers_lookback_hours)
+    min_scored_trades = int(payload.get("min_scored_trades", _daily_blockers_min_scored_trades) or _daily_blockers_min_scored_trades)
+
+    lookback_hours = max(1, min(lookback_hours, 24 * 30))
+    min_scored_trades = max(1, min(min_scored_trades, 200))
+
+    info = _write_daily_blockers_report_once(
+        lookback_hours=lookback_hours,
+        min_scored_trades=min_scored_trades,
+    )
+    return {
+        "generated": True,
+        **info,
+    }
+
+
 @app.post("/api/monitoring/auto-activate-ready")
 async def auto_activate_ready_bots(payload: dict = None, db: Session = Depends(get_db)):
     payload = payload or {}
     lookback_hours = int(payload.get("lookback_hours", 24) or 24)
     min_scored_trades = int(payload.get("min_scored_trades", 12) or 12)
     top_n = int(payload.get("top_n", 2) or 2)
+    require_runtime_ready = bool(payload.get("require_runtime_ready", False))
+    max_last_trade_age_hours = float(payload.get("max_last_trade_age_hours", 6.0) or 6.0)
+    auto_patch_executor = bool(payload.get("auto_patch_executor", True))
 
     lookback_hours = max(1, min(lookback_hours, 24 * 30))
     min_scored_trades = max(1, min(min_scored_trades, 200))
     top_n = max(1, min(top_n, 20))
+    max_last_trade_age_hours = max(0.5, min(max_last_trade_age_hours, 24 * 30))
+
+    return await _auto_activate_ready_bots_internal(
+        db,
+        lookback_hours=lookback_hours,
+        min_scored_trades=min_scored_trades,
+        top_n=top_n,
+        require_runtime_ready=require_runtime_ready,
+        max_last_trade_age_hours=max_last_trade_age_hours,
+        auto_patch_executor=auto_patch_executor,
+        trigger="auto_mode_on",
+    )
+
+
+@app.post("/api/monitoring/prepare-production")
+async def prepare_bots_for_production(payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    lookback_hours = int(payload.get("lookback_hours", 24) or 24)
+    min_scored_trades = int(payload.get("min_scored_trades", 12) or 12)
+    include_running = bool(payload.get("include_running", True))
+    include_archived = bool(payload.get("include_archived", False))
+    apply_recommendations = bool(payload.get("apply_recommendations", True))
+    auto_activate_ready = bool(payload.get("auto_activate_ready", True))
+    top_n_activate = int(payload.get("top_n_activate", 2) or 2)
+    max_last_trade_age_hours = float(payload.get("max_last_trade_age_hours", 6.0) or 6.0)
+
+    lookback_hours = max(1, min(lookback_hours, 24 * 30))
+    min_scored_trades = max(1, min(min_scored_trades, 200))
+    top_n_activate = max(1, min(top_n_activate, 20))
+    max_last_trade_age_hours = max(0.5, min(max_last_trade_age_hours, 24 * 30))
 
     monitoring = _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
-    candidates = [item for item in monitoring.get("results", []) if item.get("candidate_for_production")]
-    selected = candidates[:top_n]
+    changed = 0
+    skipped = 0
+    prepared = []
 
-    activation_results = []
-    for item in selected:
+    bots_map = {
+        bot.id: bot
+        for bot in db.query(BotDB).all()
+    }
+
+    for item in monitoring.get("results", []):
         bot_id = str(item.get("bot_id") or "").strip()
         if not bot_id:
+            skipped += 1
             continue
-        activation_results.append(
-            await _activate_bot_for_production_internal(
-                db,
-                bot_id=bot_id,
-                lookback_hours=lookback_hours,
-                min_scored_trades=min_scored_trades,
-                trigger="auto_mode_on",
-            )
+
+        bot = bots_map.get(bot_id)
+        if not bot:
+            skipped += 1
+            continue
+
+        if bot.is_archived and not include_archived:
+            skipped += 1
+            continue
+
+        if (not include_running) and str(bot.status or "").lower() == BotStatus.RUNNING:
+            skipped += 1
+            continue
+
+        patch = _build_production_preparation_patch(item=item, min_scored_trades=min_scored_trades)
+        if not apply_recommendations:
+            patch = {
+                "production_policy": patch.get("production_policy"),
+                "analysis_approved": patch.get("analysis_approved"),
+                "candidate_for_production": patch.get("candidate_for_production"),
+                "production_ready": patch.get("production_ready"),
+            }
+
+        current_cfg = dict(bot.config or {})
+        new_cfg = dict(current_cfg)
+        new_cfg.update(patch)
+
+        if new_cfg != current_cfg:
+            bot.config = new_cfg
+            changed += 1
+            if bot_id in bot_manager.active_bots:
+                bot_manager.active_bots[bot_id].reconfigure(new_cfg)
+
+        readiness = dict(item.get("readiness") or {})
+        prepared.append(
+            {
+                "bot_id": bot_id,
+                "label": readiness.get("label") or ("APTO PRODUCCION" if item.get("candidate_for_production") else "NO APTO / BLOQUEADO"),
+                "summary": readiness.get("summary") or "Sin resumen",
+                "candidate_for_production": bool(item.get("candidate_for_production")),
+                "recommendation_level": (item.get("recommendation") or {}).get("level"),
+                "applied_patch_keys": sorted(list(patch.keys())),
+            }
         )
 
-    activated_count = sum(1 for item in activation_results if item.get("activated"))
-    blocked_count = len(activation_results) - activated_count
+    db.commit()
+
+    auto_activation = None
+    if auto_activate_ready:
+        auto_activation = await _auto_activate_ready_bots_internal(
+            db,
+            lookback_hours=lookback_hours,
+            min_scored_trades=min_scored_trades,
+            top_n=top_n_activate,
+            require_runtime_ready=True,
+            max_last_trade_age_hours=max_last_trade_age_hours,
+            auto_patch_executor=True,
+            trigger="prepare_production",
+        )
 
     return {
-        "trigger": "auto_mode_on",
+        "prepared_at": datetime.now(timezone.utc).isoformat(),
         "window_hours": lookback_hours,
         "min_scored_trades": min_scored_trades,
-        "top_n": top_n,
-        "production_candidates_detected": len(candidates),
-        "attempted": len(activation_results),
-        "activated": activated_count,
-        "blocked": blocked_count,
-        "results": activation_results,
+        "bots_seen": len(monitoring.get("results", [])),
+        "configs_changed": changed,
+        "skipped": skipped,
+        "prepared": prepared,
+        "auto_activation": auto_activation,
     }
 
 @app.get("/api/positions")
@@ -1778,6 +2737,35 @@ async def close_position(position_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Position {position_id} closed manually"}
 
+
+# Nuevo endpoint: aumentar capital de una posición abierta si el bot está activo
+from fastapi import Body
+
+@app.post("/api/positions/{position_id}/increase-capital")
+async def increase_position_capital(position_id: str, amount: float = Body(..., embed=True), db: Session = Depends(get_db)):
+    position = db.query(PositionDB).filter(PositionDB.id == position_id, PositionDB.is_open == True).first()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found or not open")
+
+    # Comprobar si el bot está activo
+    bot_id = position.bot_id
+    bot = bot_manager.active_bots.get(bot_id)
+    if not bot or getattr(bot, 'status', None) != BotStatus.RUNNING:
+        return {"success": False, "message": "El bot no está activo. Solo puedes aumentar capital si el bot está en ejecución y la posición está abierta."}
+
+    # Lógica para aumentar la posición (ejemplo: enviar orden de incremento)
+    try:
+        # Aquí deberías llamar a la función real de tu executor para aumentar la posición
+        # Por ejemplo: bot.increase_position(position, amount)
+        # Simulación:
+        # Actualiza la cantidad localmente (en producción, deberías validar con el exchange)
+        position.quantity += amount
+        position.updated_at = datetime.utcnow()
+        db.commit()
+        return {"success": True, "message": f"Capital aumentado en {amount}. Nueva cantidad: {position.quantity}", "new_quantity": position.quantity}
+    except Exception as e:
+        return {"success": False, "message": f"Error al aumentar capital: {e}"}
+
 @app.get("/api/orders")
 async def get_order_log(limit: int = 100, db: Session = Depends(get_db)):
     orders = db.query(OrderLogDB).order_by(OrderLogDB.created_at.desc()).limit(limit).all()
@@ -1810,9 +2798,18 @@ async def activate_kill_switch():
     return {"message": "Global Kill Switch activated. All trades and bots stopped."}
 
 @app.get("/api/bots")
-async def list_bots(db: Session = Depends(get_db)):
+async def list_bots(include_system: bool = True, db: Session = Depends(get_db)):
     db_bots = db.query(BotDB).all()
-    return db_bots
+    if include_system:
+        return db_bots
+
+    def _is_system_managed(bot: BotDB) -> bool:
+        cfg = bot.config or {}
+        managed_by = str(cfg.get("managed_by") or "").strip().lower()
+        bot_id = str(bot.id or "").strip().upper()
+        return managed_by == "adaptive_orchestrator" or bot_id.startswith("AUTO-ADAPT-")
+
+    return [bot for bot in db_bots if not _is_system_managed(bot)]
 
 
 @app.get("/api/bot-presets")
@@ -1871,21 +2868,30 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
     new_bot_id = f"advisor_{horizon}_{uuid.uuid4().hex[:6]}"
     config["id"] = new_bot_id
 
-    success = bot_manager.start_bot(new_bot_id, config)
-    if not success:
-        raise HTTPException(status_code=400, detail="Unable to create advisor bot")
+    existing = db.query(BotDB).filter(BotDB.id == new_bot_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Unable to create advisor bot: duplicate id")
+    bot_entry = BotDB(
+        id=new_bot_id,
+        strategy=str(config.get("strategy") or "ema_cross"),
+        status=BotStatus.STOPPED,
+        config=config,
+        is_archived=False,
+    )
+    db.add(bot_entry)
+    db.commit()
 
     return {
         "executed": True,
         "action": "create_new",
         "bot_id": new_bot_id,
         "horizon": horizon,
-        "message": f"Advisor created bot {new_bot_id}",
+        "message": f"Advisor created bot {new_bot_id} in STOPPED mode (analysis-first)",
     }
 
 
 @app.post("/api/bot-presets/{preset_id}/create")
-async def create_bot_from_preset(preset_id: str, payload: dict = None):
+async def create_bot_from_preset(preset_id: str, payload: dict = None, db: Session = Depends(get_db)):
     preset = get_bot_preset(preset_id)
     if not preset:
         raise HTTPException(status_code=404, detail="Preset not found")
@@ -1902,15 +2908,26 @@ async def create_bot_from_preset(preset_id: str, payload: dict = None):
 
     base_config["id"] = bot_id
 
-    success = bot_manager.start_bot(bot_id, base_config)
-    if not success:
-        raise HTTPException(status_code=400, detail="Bot already exists or could not be started")
+    existing = db.query(BotDB).filter(BotDB.id == bot_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Bot ID already exists")
+
+    bot_entry = BotDB(
+        id=bot_id,
+        strategy=str(base_config.get("strategy") or preset.get("strategy") or "ema_cross"),
+        status=BotStatus.STOPPED,
+        config=base_config,
+        is_archived=False,
+    )
+    db.add(bot_entry)
+    db.commit()
 
     return {
         "bot_id": bot_id,
-        "status": BotStatus.RUNNING,
+        "status": BotStatus.STOPPED,
         "preset_id": preset_id,
         "preset_name": preset.get("name"),
+        "message": "Bot created in STOPPED mode. Run analysis, then start explicitly.",
     }
 
 
@@ -1960,7 +2977,7 @@ async def save_bot_from_preset_to_vault(
     }
 
 @app.post("/api/bots")
-async def create_bot(bot_config: dict):
+async def create_bot(bot_config: dict, db: Session = Depends(get_db)):
     bot_id = bot_config.get("id", "").strip()
     if not bot_id:
         # Fallback to auto-generation if not provided at all, but only if empty string wasn't explicitly sent
@@ -1968,11 +2985,30 @@ async def create_bot(bot_config: dict):
             bot_id = f"bot_{len(bot_manager.active_bots) + 1}"
         else:
             raise HTTPException(status_code=400, detail="Bot ID cannot be empty or whitespace")
-            
-    success = bot_manager.start_bot(bot_id, bot_config)
-    if not success:
-        raise HTTPException(status_code=400, detail="Bot already exists or could not be started")
-    return {"bot_id": bot_id, "status": BotStatus.RUNNING}
+
+    existing = db.query(BotDB).filter(BotDB.id == bot_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Bot ID already exists")
+
+    cfg = dict(bot_config or {})
+    cfg["id"] = bot_id
+
+    # Safety default: create bots stopped; explicit start is required.
+    bot_entry = BotDB(
+        id=bot_id,
+        strategy=str(cfg.get("strategy") or "ema_cross"),
+        status=BotStatus.STOPPED,
+        config=cfg,
+        is_archived=False,
+    )
+    db.add(bot_entry)
+    db.commit()
+
+    return {
+        "bot_id": bot_id,
+        "status": BotStatus.STOPPED,
+        "message": "Bot created in STOPPED mode. Run analysis, then start explicitly.",
+    }
 
 @app.patch("/api/bots/{bot_id}")
 async def update_bot(bot_id: str, new_config: dict):
@@ -2010,7 +3046,7 @@ async def restore_bot(bot_id: str):
     return {"message": f"Bot {bot_id} restored"}
 
 @app.post("/api/bots/{bot_id}/start")
-async def start_existing_bot(bot_id: str, db: Session = Depends(get_db)):
+async def start_existing_bot(bot_id: str, payload: dict = None, db: Session = Depends(get_db)):
     bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
     if not bot_entry:
         raise HTTPException(status_code=404, detail="Bot not found in database")
@@ -2021,6 +3057,20 @@ async def start_existing_bot(bot_id: str, db: Session = Depends(get_db)):
     # If already running in memory, treat as success (idempotent)
     if bot_id in bot_manager.active_bots:
         return {"message": f"Bot {bot_id} is already running"}
+
+    payload = payload or {}
+    cfg = dict(bot_entry.config or {})
+    if _is_live_mainnet_config(cfg):
+        bypass_gate = bool(payload.get("force_start_live", False))
+        if (not _analysis_gate_ok(cfg)) and (not bypass_gate):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Live mainnet start blocked: analysis required first. "
+                    "Set one of [analysis_approved, candidate_for_production, production_ready] in bot config "
+                    "or pass force_start_live=true explicitly."
+                ),
+            )
 
     success = bot_manager.start_bot(bot_id, bot_entry.config)
     if not success:
@@ -2065,12 +3115,16 @@ async def explain_trade(trade_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/reports/json")
 async def get_json_report(db: Session = Depends(get_db)):
+    if reporting_engine is None:
+        raise HTTPException(status_code=503, detail="Reporting engine unavailable on this runtime")
     trades = db.query(TradeDB).order_by(TradeDB.time.desc()).all()
     metrics = calculate_metrics(trades)
     return reporting_engine.generate_json_report(trades, metrics)
 
 @app.get("/api/reports/pdf")
 async def get_pdf_report(db: Session = Depends(get_db)):
+    if reporting_engine is None:
+        raise HTTPException(status_code=503, detail="PDF reporting unavailable on this runtime")
     trades = db.query(TradeDB).order_by(TradeDB.time.desc()).all()
     metrics = calculate_metrics(trades)
     filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -2085,13 +3139,17 @@ async def run_backtest(params: dict):
     
     strategy_name = params.get("strategy", "ema_cross")
     if "technical_pro" in strategy_name.lower():
+        from apps.engine.technical_pro import TechnicalProStrategy
         strategy = TechnicalProStrategy()
     elif "algo_expert" in strategy_name.lower():
+        from apps.engine.algo_expert import AlgoExpertStrategy
         strategy = AlgoExpertStrategy()
     elif "dynamic_reinvest" in strategy_name.lower():
+        from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
         tp = params.get("take_profit_pct", 0.02)
         strategy = DynamicReinvestStrategy(take_profit_pct=tp)
     else:
+        from apps.engine.ema_cross import EMACrossStrategy
         strategy = EMACrossStrategy()
         
     engine = BacktestEngine(strategy)

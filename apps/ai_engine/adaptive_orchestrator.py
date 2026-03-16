@@ -96,6 +96,8 @@ class AdaptiveOrchestratorService:
             self._task.cancel()
             try:
                 await self._task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
 

@@ -1,7 +1,7 @@
 import ccxt.async_support as ccxt
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from apps.shared.interfaces import BaseExecutionProvider
 from apps.shared.models import TradeSignal, ExecutionResult
@@ -74,6 +74,64 @@ class HyperliquidExecutor(BaseExecutionProvider):
 
     def _normalize_symbol(self, symbol: str) -> str:
         return self.normalize_symbol(symbol)
+
+    @staticmethod
+    def _extract_side_qty(position: dict) -> tuple[str, float]:
+        """Infer canonical side/qty from heterogeneous CCXT Hyperliquid payloads."""
+        info = position.get("info") or {}
+        nested_pos = info.get("position") if isinstance(info.get("position"), dict) else {}
+
+        raw_side = str(position.get("side") or nested_pos.get("side") or info.get("side") or "").strip().lower()
+
+        # Signed fields first (most reliable when present).
+        signed_size = None
+        for candidate in (
+            nested_pos.get("szi"),
+            info.get("szi"),
+            info.get("size"),
+            position.get("contracts"),
+        ):
+            try:
+                if candidate is not None and str(candidate).strip() != "":
+                    signed_size = float(candidate)
+                    break
+            except Exception:
+                continue
+
+        if signed_size is None:
+            return "", 0.0
+
+        qty = abs(float(signed_size))
+        if qty <= 0:
+            return "", 0.0
+
+        # Explicit side (if coherent) wins; sign is fallback.
+        if raw_side in {"long", "buy"}:
+            return "long", qty
+        if raw_side in {"short", "sell"}:
+            return "short", qty
+
+        return ("long", qty) if signed_size > 0 else ("short", qty)
+
+    async def _fetch_symbol_position(self, symbol: str) -> tuple[str, float]:
+        """Return current live position side and size for symbol as (side, qty)."""
+        try:
+            if not self.exchange.markets:
+                await self.exchange.load_markets()
+            wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
+            params = {"user": wallet_address} if wallet_address else {}
+            positions = await self.exchange.fetch_positions(params=params)
+            target = self._normalize_symbol(symbol)
+            for p in positions or []:
+                sym = self._normalize_symbol(str(p.get("symbol") or ""))
+                if sym != target:
+                    continue
+                side, qty = self._extract_side_qty(p)
+                if qty > 0:
+                    return side, qty
+            return "", 0.0
+        except Exception:
+            return "", 0.0
             
     async def execute(self, signal: TradeSignal) -> ExecutionResult:
         """
@@ -92,7 +150,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
                     status="failed",
                     filled_amount=0,
                     avg_price=0,
-                    timestamp=datetime.utcnow()
+                    timestamp=datetime.now(timezone.utc)
                 )
 
             # En Hyperliquid con CCXT, los símbolos suelen ser 'BTC/USDC:USDC' para perps
@@ -100,19 +158,51 @@ class HyperliquidExecutor(BaseExecutionProvider):
             symbol = self._normalize_symbol(signal.symbol)
             side = signal.side.value # 'buy' o 'sell'
             amount = signal.amount
+            signal_meta = dict(signal.meta or {})
+            reduce_only_intent = bool(
+                signal_meta.get("reduce_only")
+                or signal_meta.get("pair_action") == "close"
+                or signal_meta.get("close_reason")
+            )
             
             print(f"[Hyperliquid] Executing {side} {amount} {symbol}...")
             
             # Hyperliquid en CCXT requiere un precio de referencia para órdenes de mercado
             # para calcular el slippage máximo permitido (por defecto 5%).
             order_params = {}
-            if signal.price:
-                # Si la señal ya trae precio, lo usamos de referencia
-                price = signal.price
-            else:
-                # Si no, tenemos que obtener el precio actual del mercado
+            price = signal.price
+
+            if reduce_only_intent:
+                live_side, live_qty = await self._fetch_symbol_position(symbol)
+                expected_live_side = "long" if side == "sell" else "short"
+                if live_qty <= 0 or live_side != expected_live_side:
+                    print(
+                        f"[Hyperliquid] Skip close: no matching live position for {symbol} "
+                        f"(expected={expected_live_side}, got={live_side}:{live_qty})"
+                    )
+                    return ExecutionResult(
+                        order_id="no_position",
+                        status="failed",
+                        filled_amount=0,
+                        avg_price=0,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                amount = min(float(amount), float(live_qty))
+                order_params.update({"reduceOnly": True, "timeInForce": "Ioc"})
+
+            if not price or float(price) <= 0:
+                # Hyperliquid market orders in CCXT still need a reference price.
                 ticker = await self.exchange.fetch_ticker(symbol)
-                price = ticker['last']
+                price = float(ticker.get('last') or ticker.get('close') or ticker.get('bid') or 0)
+
+            if price <= 0:
+                return ExecutionResult(
+                    order_id="no_price",
+                    status="failed",
+                    filled_amount=0,
+                    avg_price=0,
+                    timestamp=datetime.now(timezone.utc),
+                )
             
             # Crear la orden de mercado
             # Nota: En CCXT.hyperliquid, para órdenes market, el argumento 'price' 
@@ -122,7 +212,8 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 type='market',
                 side=side,
                 amount=amount,
-                price=price
+                price=price,
+                params=order_params,
             )
 
             fee_cost = 0.0
@@ -139,13 +230,13 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 filled_amount=float(order.get('filled') or order.get('amount') or amount),
                 avg_price=float(order.get('average') or order.get('price') or price),
                 fee=fee_cost,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             
             print(f"[Hyperliquid] Order {result.order_id} {result.status} at ${result.avg_price:,.2f}")
             
             # PROTECCIÓN: Colocar stop loss automático después de abrir posición
-            if side == 'buy' and result.status in ['closed', 'filled'] and result.filled_amount > 0:
+            if (not reduce_only_intent) and side == 'buy' and result.status in ['closed', 'filled'] and result.filled_amount > 0:
                 await self._place_stop_loss(
                     symbol=symbol,
                     side='sell',
@@ -153,7 +244,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
                     entry_price=result.avg_price,
                     stop_loss_pct=0.05  # 5% stop loss por defecto
                 )
-            elif side == 'sell' and result.status in ['closed', 'filled'] and result.filled_amount > 0:
+            elif (not reduce_only_intent) and side == 'sell' and result.status in ['closed', 'filled'] and result.filled_amount > 0:
                 # Si es un short, el stop loss sería comprar
                 await self._place_stop_loss(
                     symbol=symbol,
@@ -173,7 +264,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 status="failed",
                 filled_amount=0,
                 avg_price=0,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
@@ -233,34 +324,43 @@ class HyperliquidExecutor(BaseExecutionProvider):
         except Exception as e:
             print(f"[Hyperliquid] Error placing stop loss: {e}")
 
-    async def fetch_active_positions(self) -> list:
+    async def fetch_active_positions(self) -> list | None:
         """
         Obtiene las posiciones abiertas actuales en Hyperliquid.
         """
         try:
-            # Hyperliquid en CCXT usa fetch_positions pero a veces hay que asegurarse de los mercados cargados
-            if not self.exchange.markets:
-                await self.exchange.load_markets()
-            
-            wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
-            params = {}
-            if wallet_address:
-                params["user"] = wallet_address
+            positions = []
+            for attempt in range(1, 4):
+                # Hyperliquid en CCXT usa fetch_positions pero a veces hay que asegurarse de los mercados cargados
+                if not self.exchange.markets:
+                    await self.exchange.load_markets()
 
-            positions = await self.exchange.fetch_positions(params=params)
-            print(f"[Hyperliquid] Found {len(positions)} raw position records.")
+                wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
+                params = {}
+                if wallet_address:
+                    params["user"] = wallet_address
+
+                try:
+                    positions = await self.exchange.fetch_positions(params=params)
+                    print(f"[Hyperliquid] Found {len(positions)} raw position records.")
+                    break
+                except Exception as e:
+                    msg = str(e)
+                    retriable = ("429" in msg) or ("RateLimitExceeded" in msg)
+                    if retriable and attempt < 3:
+                        await asyncio.sleep(1.0 * (2 ** (attempt - 1)))
+                        continue
+                    raise
             
             # Filtrar solo las que tienen cantidad > 0
             active = []
             for p in positions:
-                # CCXT suele normalizar la info de posiciones
-                # En Hyperliquid CCXT 'contracts' o 'info.size'
-                size = float(p.get('contracts', 0) or p.get('info', {}).get('size', 0) or 0)
-                if size != 0:
+                side, qty = self._extract_side_qty(p)
+                if qty > 0 and side:
                     active.append({
                         'symbol': p.get('symbol'),
-                        'side': 'long' if size > 0 else 'short',
-                        'quantity': abs(size),
+                        'side': side,
+                        'quantity': qty,
                         'leverage': float(p.get('leverage', 1.0) or 1.0),
                         'entry_price': float(p.get('entryPrice', 0) or 0),
                         'current_price': float(p.get('markPrice', 0) or 0),
@@ -271,7 +371,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
             return active
         except Exception as e:
             print(f"Error fetching Hyperliquid positions: {e}")
-            return []
+            return None
         finally:
             await self.exchange.close()
 

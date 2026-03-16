@@ -4,19 +4,13 @@ from datetime import datetime
 import time
 import os
 import math
-from apps.engine.ema_cross import EMACrossStrategy
-from apps.engine.technical_pro import TechnicalProStrategy
-from apps.engine.algo_expert import AlgoExpertStrategy
-from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
-from apps.engine.grid_trading import GridTradingStrategy
-from apps.engine.adaptive_learning import AdaptiveLearningStrategy
-from apps.engine.paired_balanced import PairedBalancedStrategy
 from apps.engine.market_data import MarketDataEngine
 from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
 from apps.engine.risk import RiskEngine
+from apps.ai_engine.engine import AIEngine
 from apps.shared.database import SessionLocal
-from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB, BotLearningStateDB
+from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB, BotLearningStateDB, TradeSignal
 
 
 def _to_bool(value, default: bool = False) -> bool:
@@ -39,18 +33,23 @@ class BotInstance:
         # Strategy Factory
         strategy_name = config.get("strategy", "ema_cross")
         if "technical_pro" in strategy_name.lower():
+            from apps.engine.technical_pro import TechnicalProStrategy
             self.strategy = TechnicalProStrategy()
         elif "algo_expert" in strategy_name.lower():
+            from apps.engine.algo_expert import AlgoExpertStrategy
             self.strategy = AlgoExpertStrategy()
         elif "dynamic_reinvest" in strategy_name.lower():
+            from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
             tp = config.get("take_profit_pct", 0.02)
             self.strategy = DynamicReinvestStrategy(take_profit_pct=tp)
         elif "grid_trading" in strategy_name.lower():
+            from apps.engine.grid_trading import GridTradingStrategy
             upper = float(config.get("upper_limit", 70000))
             lower = float(config.get("lower_limit", 60000))
             grids = int(config.get("num_grids", 10))
             self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
         elif "adaptive_learning" in strategy_name.lower() or "arbitrario" in strategy_name.lower():
+            from apps.engine.adaptive_learning import AdaptiveLearningStrategy
             short_window = int(config.get("adaptive_short_window", 12))
             long_window = int(config.get("adaptive_long_window", 48))
             base_amount = float(config.get("adaptive_base_amount", 0.01))
@@ -60,9 +59,11 @@ class BotInstance:
                 base_amount=base_amount,
             )
         elif "paired_balanced" in strategy_name.lower() or "pair" in strategy_name.lower():
+            from apps.engine.paired_balanced import PairedBalancedStrategy
             lookback = int(config.get("pair_lookback", 120) or 120)
             self.strategy = PairedBalancedStrategy(lookback=lookback)
         else:
+            from apps.engine.ema_cross import EMACrossStrategy
             fast = config.get("fast_ema", 9)
             slow = config.get("slow_ema", 21)
             self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow)
@@ -85,6 +86,139 @@ class BotInstance:
             self.portfolio = PaperTradingPortfolio(bot_id, initial_balance=initial_balance)
 
         self.risk_engine = RiskEngine()
+        self.ai_engine = AIEngine(model_name=str(config.get("ai_model") or "llama3"))
+
+    def _position_snapshot(self, symbol: str, last_price: float):
+        if last_price <= 0:
+            return None
+
+        if self.portfolio is not None:
+            payload = dict((self.portfolio.positions or {}).get(symbol) or {})
+            amount = float(payload.get("amount") or 0.0)
+            entry_price = float(payload.get("avg_price") or 0.0)
+            side = str(payload.get("side") or "long").lower()
+            if amount <= 0 or entry_price <= 0:
+                return None
+        else:
+            with SessionLocal() as db:
+                pos = db.query(PositionDB).filter(
+                    PositionDB.bot_id == self.bot_id,
+                    PositionDB.symbol == symbol,
+                    PositionDB.is_open == True,
+                ).first()
+                if not pos:
+                    return None
+                amount = float(pos.quantity or 0.0)
+                entry_price = float(pos.entry_price or 0.0)
+                side = str(pos.side or "long").lower()
+                if amount <= 0 or entry_price <= 0:
+                    return None
+
+        if side == "short":
+            profit_pct = (entry_price - last_price) / max(entry_price, 1e-12)
+            unrealized_pnl = (entry_price - last_price) * amount
+        else:
+            profit_pct = (last_price - entry_price) / max(entry_price, 1e-12)
+            unrealized_pnl = (last_price - entry_price) * amount
+
+        return {
+            "side": side,
+            "amount": amount,
+            "entry_price": entry_price,
+            "profit_pct": float(profit_pct),
+            "unrealized_pnl": float(unrealized_pnl),
+        }
+
+    def _is_ai_take_profit_scope_allowed(self) -> bool:
+        # By default, AI TP only runs for bots that are live-mainnet and production-ready.
+        only_production = bool(self.config.get("ai_take_profit_only_production", True))
+        if not only_production:
+            return True
+
+        executor = str(self.config.get("executor") or "paper").strip().lower()
+        is_live_mainnet = executor == "hyperliquid" and (not _to_bool(self.config.get("hyperliquid_testnet"), default=False))
+        if not is_live_mainnet:
+            return False
+
+        prepared = bool(
+            self.config.get("production_ready")
+            or self.config.get("candidate_for_production")
+            or self.config.get("analysis_approved")
+        )
+        return prepared
+
+    async def _maybe_apply_ai_take_profit(self, signal, symbol: str, last_price: float, history: list):
+        if not bool(self.config.get("ai_take_profit_enabled", True)):
+            return signal
+        if not self._is_ai_take_profit_scope_allowed():
+            return signal
+        if signal.side != TradeSide.HOLD:
+            return signal
+
+        snapshot = self._position_snapshot(symbol, last_price)
+        if not snapshot or snapshot["unrealized_pnl"] <= 0:
+            return signal
+
+        state = self._load_learning_state(symbol)
+        now_ts = float(time.time())
+        cooldown_sec = float(self.config.get("ai_take_profit_cooldown_sec", 120) or 120)
+        last_tp_ts = float(state.get("ai_last_take_profit_ts", 0.0) or 0.0)
+        if (now_ts - last_tp_ts) < cooldown_sec:
+            return signal
+
+        closes = []
+        for row in (history or []):
+            if isinstance(row, (list, tuple)) and len(row) >= 5:
+                try:
+                    closes.append(float(row[4]))
+                except Exception:
+                    pass
+        returns = []
+        for idx in range(1, len(closes)):
+            prev = closes[idx - 1]
+            cur = closes[idx]
+            if prev > 0:
+                returns.append((cur - prev) / prev)
+        volatility_pct = 0.0
+        trend_strength = 0.0
+        if returns:
+            mean_ret = sum(returns) / len(returns)
+            variance = sum((r - mean_ret) ** 2 for r in returns) / len(returns)
+            volatility_pct = math.sqrt(max(variance, 0.0))
+            trend_strength = mean_ret
+
+        decision = await self.ai_engine.evaluate_take_profit(
+            {
+                "profit_pct": snapshot["profit_pct"],
+                "unrealized_pnl": snapshot["unrealized_pnl"],
+                "volatility_pct": volatility_pct,
+                "trend_strength": trend_strength,
+                "min_profit_pct": float(self.config.get("ai_min_take_profit_pct", 0.006) or 0.006),
+                "hard_take_profit_pct": float(self.config.get("ai_hard_take_profit_pct", 0.02) or 0.02),
+            }
+        )
+
+        if not bool(decision.get("should_take_profit")):
+            return signal
+
+        close_side = TradeSide.SELL if snapshot["side"] == "long" else TradeSide.BUY
+        tp_signal = TradeSignal(
+            symbol=symbol,
+            side=close_side,
+            amount=float(snapshot["amount"]),
+            price=float(last_price),
+            strategy_id=f"{signal.strategy_id}_ai_tp",
+            meta={
+                "reason": "ai_take_profit",
+                "ai_decision": decision,
+                "profit_pct": round(float(snapshot["profit_pct"]), 6),
+                "unrealized_pnl": round(float(snapshot["unrealized_pnl"]), 8),
+            },
+        )
+        state["ai_last_take_profit_ts"] = round(now_ts, 3)
+        self._save_learning_state(symbol, state)
+        print(f"[{self.bot_id}] AI take-profit triggered: {decision.get('reason')}")
+        return tp_signal
 
     def _ensure_self_management_defaults(self):
         base_alloc = float(self.config.get("allocation", self.config.get("capital_allocation", 100.0)) or 100.0)
@@ -256,6 +390,15 @@ class BotInstance:
     def reconfigure(self, new_config: Dict):
         """Update bot configuration and re-initialize strategy."""
         self.config.update(new_config)
+
+        # Local imports keep startup lighter and avoid circular import issues.
+        from apps.engine.technical_pro import TechnicalProStrategy
+        from apps.engine.algo_expert import AlgoExpertStrategy
+        from apps.engine.dynamic_reinvest import DynamicReinvestStrategy
+        from apps.engine.grid_trading import GridTradingStrategy
+        from apps.engine.adaptive_learning import AdaptiveLearningStrategy
+        from apps.engine.paired_balanced import PairedBalancedStrategy
+        from apps.engine.ema_cross import EMACrossStrategy
 
         if self.config.get("executor", "paper").lower() == "hyperliquid" and getattr(self, "executor", None):
             if "symbol" in self.config:
@@ -565,6 +708,7 @@ class BotInstance:
                             meta={
                                 "pair_key": pair_key,
                                 "pair_action": "close",
+                                "reduce_only": True,
                                 "close_reason": close_reason,
                                 "zscore": round(float(decision.zscore), 6),
                                 "correlation": round(float(decision.correlation), 6),
@@ -712,6 +856,8 @@ class BotInstance:
                 updated_learning_state = (signal.meta or {}).get('learning_state') if getattr(signal, 'meta', None) else None
                 if isinstance(updated_learning_state, dict):
                     self._save_learning_state(symbol, updated_learning_state)
+
+                signal = await self._maybe_apply_ai_take_profit(signal, symbol, float(last_price or 0.0), history)
                 
                 # 3. Validate with Risk Engine
                 risk_result = await self.risk_engine.validate(signal)

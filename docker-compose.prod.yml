@@ -1,0 +1,71 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: antigravity/api:prod
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYDANTIC_DISABLE_PLUGINS: "__all__"
+      DATABASE_URL: sqlite:////app/data/trading_runtime.db
+      PORT: "8000"
+      WEB_CONCURRENCY: "2"
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8000:8000"
+    volumes:
+      - antigravity_data:/app/data
+      - antigravity_reports:/app/reports
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: antigravity/worker:prod
+    profiles: ["worker"]
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYDANTIC_DISABLE_PLUGINS: "__all__"
+      DATABASE_URL: sqlite:////app/data/trading_runtime.db
+    security_opt:
+      - no-new-privileges:true
+    command: ["python", "-m", "apps.bot_manager.manager"]
+    volumes:
+      - antigravity_data:/app/data
+      - antigravity_reports:/app/reports
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  antigravity_data:
+  antigravity_reports:
