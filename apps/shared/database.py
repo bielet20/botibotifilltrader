@@ -4,8 +4,9 @@ from sqlalchemy.orm import declarative_base
 import os
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL or "@db/" in DATABASE_URL:
-    # Fallback to local SQLite for development if DB host is 'db' (docker-only) or not set
+if not DATABASE_URL:
+    # Fallback to local SQLite only when nothing is configured.
+    # En Docker, DATABASE_URL suele ser tipo `...@db/...` y NO debe forzar SQLite.
     DATABASE_URL = "sqlite:///./trading.db"
     print(f"--- [Database] Using local SQLite fallback: {DATABASE_URL} ---")
 
