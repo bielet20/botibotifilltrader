@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from enum import Enum
 from datetime import datetime
-from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey, Uuid
+from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey, Uuid, Text
 import uuid
 
 # Base for SQLAlchemy
@@ -145,4 +145,16 @@ class BotLearningStateDB(Base):
     symbol = Column(String(30), nullable=False)
     strategy = Column(String(100), nullable=True)
     state = Column(JSON, default={})
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EncryptedCredentialDB(Base):
+    """
+    Credenciales sensibles cifradas con Fernet (clave maestra solo en entorno APP_CREDENTIALS_FERNET_KEY).
+    id fijo 'hyperliquid' para la cuenta Hyperliquid.
+    """
+    __tablename__ = "encrypted_credentials"
+
+    id = Column(String(64), primary_key=True)
+    ciphertext = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

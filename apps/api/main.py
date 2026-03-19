@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from statistics import mean, pstdev
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
+from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import asyncio
@@ -24,6 +25,14 @@ from apps.reporting_engine.production_guard import ProductionGuardService
 from apps.reporting_engine.paper_monitor_runtime import PaperMonitorRuntimeService
 from apps.shared.database import init_db, get_db, SessionLocal
 from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB, BotAlertDB, BotLearningStateDB
+from apps.shared.hyperliquid_credentials import (
+    get_hyperliquid_wallet_and_key,
+    fernet_configured,
+    encrypted_blob_exists,
+    save_hyperliquid_credentials_encrypted,
+    delete_hyperliquid_encrypted_credentials,
+    invalidate_hyperliquid_credentials_cache,
+)
 from apps.shared.bot_presets import list_bot_presets, get_bot_preset
 from apps.engine.paper_portfolio import PaperPortfolioDB
 from apps.engine.position_sync import PositionSyncService
@@ -370,6 +379,13 @@ def _write_env_values(updates: dict):
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(out).rstrip() + "\n")
+
+
+def _persist_env_updates(updates: dict):
+    """Escribe .env y actualiza os.environ para que el proceso vea los cambios sin reiniciar."""
+    _write_env_values(updates)
+    for key, value in updates.items():
+        os.environ[key] = str(value)
 
 
 def _mask_wallet(wallet: str) -> str:
@@ -1347,6 +1363,7 @@ async def _activate_bot_for_production_internal(
 async def startup_event():
     global _auto_production_loop_running, _auto_production_loop_task
     global _daily_blockers_loop_running, _daily_blockers_loop_task
+    load_dotenv(_env_file_path(), override=False)
     init_db()
     try:
         await asyncio.wait_for(bot_manager.resume_bots(), timeout=20)
@@ -1528,10 +1545,11 @@ async def get_take_profit_status():
 
 
 @app.get("/api/settings/hyperliquid")
-async def get_hyperliquid_settings():
+async def get_hyperliquid_settings(db: Session = Depends(get_db)):
     env = _read_env_values()
-    wallet = env.get("HYPERLIQUID_WALLET_ADDRESS", "")
-    signing_key = env.get("HYPERLIQUID_SIGNING_KEY", "")
+    wallet_res, sk_res = get_hyperliquid_wallet_and_key()
+    wallet = (wallet_res or env.get("HYPERLIQUID_WALLET_ADDRESS", "")).strip()
+    signing_key = (sk_res or "").strip()
     use_testnet = env.get("HYPERLIQUID_USE_TESTNET", "True").strip().lower() == "true"
 
     wallet_ok = HyperliquidExecutor._is_valid_wallet(wallet)
@@ -1578,6 +1596,10 @@ async def get_hyperliquid_settings():
         "wallet_masked": _mask_wallet(wallet),
         "signing_key_present": bool(signing_key),
         "use_testnet": use_testnet,
+        "crypto": {
+            "fernet_key_configured": fernet_configured(),
+            "encrypted_credentials_in_database": encrypted_blob_exists(db),
+        },
         "checks": {
             "selected_env": selected_env,
             "selected_env_auth_ok": selected_env_auth_ok,
@@ -1607,24 +1629,59 @@ async def get_hyperliquid_settings():
 
 
 @app.post("/api/settings/hyperliquid/save")
-async def save_hyperliquid_settings(payload: dict = None):
+async def save_hyperliquid_settings(
+    db: Session = Depends(get_db),
+    payload: dict = None,
+    x_secrets_admin_token: str | None = Header(default=None, alias="X-Secrets-Admin-Token"),
+):
     payload = payload or {}
+    admin = os.getenv("SECRETS_ADMIN_TOKEN", "").strip()
+    if admin and (x_secrets_admin_token or "").strip() != admin:
+        raise HTTPException(status_code=401, detail="X-Secrets-Admin-Token inválido o ausente")
+
     wallet = str(payload.get("wallet_address") or "").strip()
     signing_key = str(payload.get("signing_key") or "").strip()
     use_testnet = bool(payload.get("use_testnet", True))
+    # Por defecto cifrar en BD solo si hay clave maestra; si no, .env en texto (compatibilidad).
+    encrypt_db = bool(payload.get("encrypt_in_database", fernet_configured()))
 
     if not HyperliquidExecutor._is_valid_wallet(wallet):
         raise HTTPException(status_code=400, detail="Wallet inválida. Debe ser 0x + 40 hex")
     if not HyperliquidExecutor._is_valid_private_key(signing_key):
         raise HTTPException(status_code=400, detail="Signing key inválida. Debe ser 0x + 64 hex")
 
-    _write_env_values(
-        {
-            "HYPERLIQUID_WALLET_ADDRESS": wallet,
-            "HYPERLIQUID_SIGNING_KEY": signing_key,
-            "HYPERLIQUID_USE_TESTNET": "True" if use_testnet else "False",
-        }
-    )
+    if encrypt_db and not fernet_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Para guardar cifrado define APP_CREDENTIALS_FERNET_KEY en .env (genera con: "
+            "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")",
+        )
+
+    if encrypt_db:
+        try:
+            save_hyperliquid_credentials_encrypted(wallet, signing_key, db)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"No se pudo cifrar/guardar credenciales: {e}") from e
+        _persist_env_updates(
+            {
+                "HYPERLIQUID_WALLET_ADDRESS": wallet,
+                "HYPERLIQUID_SIGNING_KEY": "",
+                "HYPERLIQUID_USE_TESTNET": "True" if use_testnet else "False",
+                "HYPERLIQUID_USE_ENCRYPTED_CREDENTIALS": "True",
+            }
+        )
+    else:
+        if encrypted_blob_exists(db):
+            delete_hyperliquid_encrypted_credentials(db)
+        _persist_env_updates(
+            {
+                "HYPERLIQUID_WALLET_ADDRESS": wallet,
+                "HYPERLIQUID_SIGNING_KEY": signing_key,
+                "HYPERLIQUID_USE_TESTNET": "True" if use_testnet else "False",
+                "HYPERLIQUID_USE_ENCRYPTED_CREDENTIALS": "False",
+            }
+        )
+    invalidate_hyperliquid_credentials_cache()
 
     selected_auth_ok, selected_auth_error = await _check_private_auth(wallet, signing_key, use_testnet)
 

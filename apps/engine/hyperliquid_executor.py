@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from apps.shared.interfaces import BaseExecutionProvider
 from apps.shared.models import TradeSignal, ExecutionResult
+from apps.shared.hyperliquid_credentials import get_hyperliquid_wallet_and_key
 
 class HyperliquidExecutor(BaseExecutionProvider):
     """
@@ -13,18 +14,18 @@ class HyperliquidExecutor(BaseExecutionProvider):
     """
     
     def __init__(self, use_testnet: Optional[bool] = None):
-        wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
-        signing_key = os.getenv("HYPERLIQUID_SIGNING_KEY")
+        wallet_address, signing_key = get_hyperliquid_wallet_and_key()
         if use_testnet is None:
             use_testnet = os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"
+        self._wallet_address = wallet_address
         self.is_configured = self._is_valid_wallet(wallet_address) and self._is_valid_private_key(signing_key)
         
         if not self.is_configured:
-            print("Warning: Hyperliquid credentials missing or invalid in .env (wallet/private key format)")
+            print("Warning: Hyperliquid credentials missing or invalid (.env o almacén cifrado)")
             
         self.exchange = ccxt.hyperliquid({
-            'privateKey': signing_key,
-            'walletAddress': wallet_address,
+            'privateKey': signing_key or "",
+            'walletAddress': wallet_address or "",
         })
         
         if use_testnet:
@@ -118,7 +119,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
         try:
             if not self.exchange.markets:
                 await self.exchange.load_markets()
-            wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
+            wallet_address = self._wallet_address or os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
             params = {"user": wallet_address} if wallet_address else {}
             positions = await self.exchange.fetch_positions(params=params)
             target = self._normalize_symbol(symbol)
@@ -335,7 +336,7 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 if not self.exchange.markets:
                     await self.exchange.load_markets()
 
-                wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
+                wallet_address = self._wallet_address or os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
                 params = {}
                 if wallet_address:
                     params["user"] = wallet_address

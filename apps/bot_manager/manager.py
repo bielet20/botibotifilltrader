@@ -1,9 +1,15 @@
 import asyncio
+from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
 import time
 import os
 import math
+
+from dotenv import load_dotenv
+
+_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_ROOT / ".env", override=False)
 from apps.engine.market_data import MarketDataEngine
 from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
