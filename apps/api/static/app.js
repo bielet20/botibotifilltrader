@@ -57,6 +57,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const previewStats = document.getElementById('previewStats');
     const fieldSelectorModal = document.getElementById('fieldSelectorModal');
     const fieldOptions = document.getElementById('fieldOptions');
+    /** Encabezados de columnas en #bots (deben coincidir con <th> en index.html). */
+    const allBotFields = [
+        'ID Bot',
+        'Nombre',
+        'Estrategia',
+        'Estado Operativo',
+        'Asignación',
+        'PnL Realizado',
+        'Uptime',
+        'Éxito (hist.)',
+        'Rendimiento (7d)',
+        'Red / Mainnet',
+        'Acciones',
+    ];
+    let botVisibleFields = [...allBotFields];
+    /** Filas de GET /api/bots/performance-summary por bot_id */
+    let botPerformanceById = {};
     const closeFieldModal = document.getElementById('closeFieldModal');
     const saveFields = document.getElementById('saveFields');
     const newBotPreset = document.getElementById('newBotPreset');
@@ -94,6 +111,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const settingsWalletAddressInput = document.getElementById('settingsWalletAddress');
     const settingsSigningKeyInput = document.getElementById('settingsSigningKey');
     const settingsUseTestnetSelect = document.getElementById('settingsUseTestnet');
+    const settingsEncryptCredentialsCb = document.getElementById('settingsEncryptCredentials');
+    const settingsCryptoInfo = document.getElementById('settingsCryptoInfo');
+    const settingsSecretsAdminTokenInput = document.getElementById('settingsSecretsAdminToken');
     const settingsStatus = document.getElementById('settingsStatus');
     const saveHyperliquidSettingsBtn = document.getElementById('saveHyperliquidSettingsBtn');
     const runtimeOpsStatus = document.getElementById('runtimeOpsStatus');
@@ -119,6 +139,67 @@ document.addEventListener('DOMContentLoaded', () => {
     let botPresets = [];
     let advisorMap = {};
     let assetAdvisorMap = {};
+    /** Si ya existe signing key en servidor (.env o BD cifrada), se puede guardar sin reescribirla. */
+    let hlSigningKeyPresent = false;
+
+    function renderSettingsCryptoInfo(crypto) {
+        if (!settingsCryptoInfo) return;
+        const c = crypto || {};
+        const fernet = !!c.fernet_key_configured;
+        const encDb = !!c.encrypted_credentials_in_database;
+        settingsCryptoInfo.innerHTML = [
+            `<div><strong>Clave maestra Fernet (servidor):</strong> ${fernet ? '<span style="color:var(--accent-emerald);">configurada</span>' : '<span style="color:var(--accent-ruby);">no configurada</span>'} — añade <code style="font-size:0.78em;">APP_CREDENTIALS_FERNET_KEY</code> en <code style="font-size:0.78em;">.env</code></div>`,
+            `<div style="margin-top:6px;"><strong>Clave de firma en BD cifrada:</strong> ${encDb ? '<span style="color:var(--accent-emerald);">sí</span>' : '<span style="color:var(--text-muted);">no</span>'}</div>`,
+        ].join('');
+        if (settingsEncryptCredentialsCb) {
+            settingsEncryptCredentialsCb.disabled = !fernet;
+            if (!fernet) {
+                settingsEncryptCredentialsCb.checked = false;
+                settingsEncryptCredentialsCb.title = 'Configura APP_CREDENTIALS_FERNET_KEY en el servidor para habilitar cifrado';
+            }
+        }
+    }
+
+    function formatApiErrorDetail(err) {
+        const d = err?.detail;
+        if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
+        if (d && typeof d === 'object') return JSON.stringify(d);
+        return d || 'Error desconocido';
+    }
+
+    /** Inicio de bot con reintento si el backend bloquea mainnet sin análisis. */
+    async function startBotRespectingMainnetGate(botId) {
+        let response = await fetch(`/api/bots/${botId}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force_start_live: false }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            const msg = formatApiErrorDetail(err);
+            if (response.status === 400 && String(msg).includes('Bloqueo mainnet')) {
+                const okForce = window.confirm(
+                    'Este bot usa Hyperliquid en MAINNET: hace falta pasar el análisis de producción en la config del bot.\n\n'
+                    + '¿Forzar el arranque de todas formas? (solo bajo tu responsabilidad)',
+                );
+                if (!okForce) {
+                    return { ok: false, message: msg, cancelled: true };
+                }
+                response = await fetch(`/api/bots/${botId}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force_start_live: true }),
+                });
+            } else {
+                return { ok: false, message: msg };
+            }
+        }
+        if (!response.ok) {
+            const err2 = await response.json().catch(() => ({}));
+            return { ok: false, message: formatApiErrorDetail(err2) };
+        }
+        return { ok: true };
+    }
 
     // Custom Confirmation Modal Elements
     const customConfirmModal = document.getElementById('customConfirmModal');
@@ -401,7 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ].join('');
     }
 
-    async function loadHyperliquidSettings() {
+    async function loadHyperliquidSettings(justSaved = false) {
         if (!settingsStatus) return;
         settingsStatus.textContent = 'Estado: cargando configuración...';
         try {
@@ -411,18 +492,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(err.detail || 'No se pudo cargar la configuración');
             }
             const data = await response.json();
+            hlSigningKeyPresent = !!data.signing_key_present;
             if (settingsWalletAddressInput) {
                 settingsWalletAddressInput.value = data.wallet_address || '';
                 settingsWalletAddressInput.placeholder = data.wallet_masked || '0x...';
             }
             if (settingsSigningKeyInput) {
                 settingsSigningKeyInput.value = '';
-                settingsSigningKeyInput.placeholder = data.signing_key_present ? '******** (guardada)' : '0x...';
+                settingsSigningKeyInput.placeholder = data.signing_key_present
+                    ? 'Opcional: dejar vacío para conservar la clave guardada'
+                    : '0x + 64 hex (obligatorio la primera vez)';
             }
             if (settingsUseTestnetSelect) {
                 settingsUseTestnetSelect.value = data.use_testnet ? 'true' : 'false';
             }
-            renderSettingsStatus(data.checks, false, !!data.use_testnet);
+            renderSettingsCryptoInfo(data.crypto);
+            if (settingsEncryptCredentialsCb && data.crypto?.fernet_key_configured) {
+                settingsEncryptCredentialsCb.checked = true;
+            }
+            renderSettingsStatus(data.checks, justSaved, !!data.use_testnet);
         } catch (error) {
             console.error('Error loading Hyperliquid settings:', error);
             settingsStatus.textContent = 'Error cargando ajustes: ' + error.message;
@@ -435,30 +523,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const wallet = (settingsWalletAddressInput?.value || '').trim();
         const signingKey = (settingsSigningKeyInput?.value || '').trim();
         const useTestnet = (settingsUseTestnetSelect?.value || 'true') === 'true';
+        const encryptInDatabase = !!(settingsEncryptCredentialsCb && !settingsEncryptCredentialsCb.disabled && settingsEncryptCredentialsCb.checked);
+        const keepExistingSigningKey = !signingKey && !!hlSigningKeyPresent;
+        const adminTok = (settingsSecretsAdminTokenInput?.value || '').trim();
 
         if (!wallet) {
-            alert('Debes informar la wallet de Hyperliquid.');
+            alert('Debes informar la dirección de billetera de Hyperliquid.');
             return;
         }
-        if (!signingKey) {
-            alert('Debes informar la signing key para guardar y validar.');
+        if (!signingKey && !keepExistingSigningKey) {
+            alert('Introduce la clave privada del API wallet (agente), o deja el campo vacío solo si ya había una clave guardada en este servidor.');
             return;
         }
 
         saveHyperliquidSettingsBtn.disabled = true;
         const previousText = saveHyperliquidSettingsBtn.textContent;
         saveHyperliquidSettingsBtn.textContent = 'GUARDANDO...';
-        settingsStatus.textContent = 'Guardando y validando credenciales...';
+        settingsStatus.textContent = 'Guardando, validando y aplicando cifrado si corresponde...';
 
         try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (adminTok) {
+                headers['X-Secrets-Admin-Token'] = adminTok;
+            }
             const response = await fetch('/api/settings/hyperliquid/save', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     wallet_address: wallet,
                     signing_key: signingKey,
-                    use_testnet: useTestnet
-                })
+                    use_testnet: useTestnet,
+                    encrypt_in_database: encryptInDatabase,
+                    keep_existing_signing_key: keepExistingSigningKey,
+                }),
             });
 
             if (!response.ok) {
@@ -466,12 +563,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(err.detail || 'No se pudo guardar configuración');
             }
 
-            const data = await response.json();
-            if (settingsSigningKeyInput) {
-                settingsSigningKeyInput.value = '';
-                settingsSigningKeyInput.placeholder = '******** (guardada)';
-            }
-            renderSettingsStatus(data.checks, true, !!data.use_testnet);
+            await response.json();
+            await loadHyperliquidSettings(true);
         } catch (error) {
             console.error('Error saving Hyperliquid settings:', error);
             settingsStatus.textContent = 'Error guardando ajustes: ' + error.message;
@@ -1380,9 +1473,27 @@ document.addEventListener('DOMContentLoaded', () => {
             </table>
         `;
     }
+    async function fetchBotPerformanceSummary() {
+        try {
+            const res = await fetch('/api/bots/performance-summary?lookback_hours=168&min_scored_trades=8');
+            if (!res.ok) return;
+            const data = await res.json();
+            const map = {};
+            (data.bots || []).forEach((row) => {
+                if (row.bot_id) map[row.bot_id] = row;
+            });
+            botPerformanceById = map;
+        } catch (e) {
+            console.warn('No se pudo cargar performance-summary:', e);
+        }
+    }
+
     async function fetchBots() {
         try {
-            const response = await fetch('/api/bots?include_system=false');
+            const [response] = await Promise.all([
+                fetch('/api/bots?include_system=false'),
+                fetchBotPerformanceSummary(),
+            ]);
             const bots = await response.json();
 
             const isSystemManagedBot = (bot) => {
@@ -1481,7 +1592,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!botTableBody) return;
 
         if (!Array.isArray(bots) || bots.length === 0) {
-            botTableBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay bots en Mis Bots (activos o en espera).</td></tr>';
+            botTableBody.innerHTML = '<tr><td colspan="11" style="text-align: center; padding: 2rem; color: var(--text-muted);">No hay bots en Mis Bots (activos o en espera).</td></tr>';
             return;
         }
 
@@ -1499,6 +1610,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const uptimeText = bot.status === 'running' ? 'En ejecución' : 'Detenido';
 
+            const perf = botPerformanceById[bot.id] || {};
+            const m = perf.metrics || {};
+            const readiness = perf.readiness || {};
+            const safety = perf.mainnet_safety || {};
+            const win7 = m.win_rate != null ? Number(m.win_rate) : null;
+            const net7 = m.net_pnl != null ? Number(m.net_pnl) : null;
+            const scored7 = m.scored_trades != null ? Number(m.scored_trades) : 0;
+            const pf7 = m.profit_factor != null ? Number(m.profit_factor) : null;
+            let rendimientoCell = '<span style="color:var(--text-muted);">—</span>';
+            if (scored7 > 0 && win7 != null && net7 != null) {
+                const netStr = (net7 >= 0 ? '+' : '') + '$' + net7.toFixed(2);
+                const pfStr = pf7 != null ? ` · PF ${pf7.toFixed(2)}` : '';
+                rendimientoCell = `<span style="font-size:0.82rem;" title="${readiness.summary || ''}"><strong>${win7.toFixed(1)}%</strong> WR · <span style="color:${net7 >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)'};">${netStr}</span> · ${scored7} ops${pfStr}</span>`;
+            } else if ((m.total_trades || 0) > 0 && scored7 === 0) {
+                rendimientoCell = '<span style="color:var(--text-muted);font-size:0.82rem;">Ops sin PnL cerrado</span>';
+            }
+
+            const netLabel = perf.network_label || '—';
+            const apto = !!readiness.gate_ok;
+            const aptoColor = apto ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
+            const mainnetLock = safety.is_live_mainnet && !safety.analysis_gate_ok;
+            const flagsTxt = [safety.flags?.production_ready && 'PR', safety.flags?.analysis_approved && 'AA', safety.flags?.candidate_for_production && 'CP']
+                .filter(Boolean).join(' ') || 'sin flags';
+            const seguridadTitle = (readiness.blockers && readiness.blockers.length)
+                ? readiness.blockers.join(' | ')
+                : (readiness.summary || '');
+            const seguridadCell = `
+                <div style="font-size:0.78rem;line-height:1.35;" title="${seguridadTitle.replace(/"/g, '&quot;')}">
+                    <div><strong>${netLabel}</strong>${mainnetLock ? ' 🔒' : ''}</div>
+                    <div style="margin-top:4px;">Prod: <span style="color:${aptoColor};font-weight:700;">${apto ? 'APTO' : 'REVISAR'}</span></div>
+                    <div style="color:var(--text-muted);margin-top:2px;">${flagsTxt}</div>
+                </div>`;
+
             return `
             <tr class="bot-row ${bot.status === 'running' ? 'bot-running' : 'bot-waiting'}" data-id="${bot.id}">
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${bot.id}</td>
@@ -1513,6 +1657,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); color: ${pnlColor}; font-weight: 600;">${pnlPrefix}$${botRealizedPnl.toFixed(3)}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${uptimeText}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05);">${successRate}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align:top;">${rendimientoCell}</td>
+                <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align:top;">${seguridadCell}</td>
                 <td style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: right;">
                     <button class="glass bot-action" data-id="${bot.id}" data-running="${bot.status === 'running' ? 'true' : 'false'}" data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="padding: 5px; color: ${bot.status === 'running' ? 'var(--accent-ruby)' : 'var(--accent-emerald)'}; cursor: pointer; border: none;" title="${bot.status === 'running' ? 'Stop Bot' : 'Start Bot'}">
                         <i data-lucide="${bot.status === 'running' ? 'pause-circle' : 'play-circle'}" style="width: 16px; height: 16px;"></i>
@@ -1581,7 +1727,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateTableVisibility() {
-        const table = document.querySelector('.bot-list table');
+        const table =
+            document.querySelector('#bots table.institutional-table') ||
+            document.getElementById('botTableBody')?.closest('table');
         if (!table) return;
 
         const headers = table.querySelectorAll('thead th');
@@ -3201,10 +3349,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const botId = startTestBotBtn.dataset.botId;
             if (!botId) return;
             try {
-                const response = await fetch(`/api/bots/${botId}/start`, { method: 'POST' });
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'No se pudo iniciar bot');
+                const result = await startBotRespectingMainnetGate(botId);
+                if (!result.ok) {
+                    alert(result.cancelled ? 'No se inició:\n' + result.message : 'No se pudo iniciar bot: ' + result.message);
+                    return;
                 }
                 fetchBots();
                 fetchTestInsights();
@@ -3391,16 +3539,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (actionIcon.disabled) return;
             const botId = actionIcon.dataset.id;
             const isCurrentlyRunning = actionIcon.dataset.running === 'true';
-            const endpoint = isCurrentlyRunning ? `/api/bots/${botId}/stop` : `/api/bots/${botId}/start`;
 
             actionIcon.style.opacity = '0.5';
             actionIcon.disabled = true; // Prevent spam clicks
 
             try {
-                const response = await fetch(endpoint, { method: 'POST' });
-                if (!response.ok) {
-                    const err = await response.json();
-                    alert('Action failed: ' + err.detail);
+                if (isCurrentlyRunning) {
+                    const response = await fetch(`/api/bots/${botId}/stop`, { method: 'POST' });
+                    if (!response.ok) {
+                        const err = await response.json().catch(() => ({}));
+                        alert('Error al parar: ' + formatApiErrorDetail(err));
+                    }
+                } else {
+                    const result = await startBotRespectingMainnetGate(botId);
+                    if (!result.ok && !result.cancelled) {
+                        alert('Error al iniciar: ' + result.message);
+                    } else if (!result.ok && result.cancelled) {
+                        alert('No se inició el bot:\n' + result.message);
+                    }
                 }
                 fetchBots();
             } catch (error) {
@@ -3474,10 +3630,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
 
-                const startResponse = await fetch(`/api/bots/${botId}/start`, { method: 'POST' });
-                if (!startResponse.ok) {
-                    const err = await startResponse.json();
-                    alert('Start failed: ' + (err.detail || 'Unknown error'));
+                const startResult = await startBotRespectingMainnetGate(botId);
+                if (!startResult.ok) {
+                    alert(
+                        startResult.cancelled
+                            ? 'No se inició:\n' + startResult.message
+                            : 'Error al iniciar: ' + startResult.message,
+                    );
                     return;
                 }
 
@@ -3674,6 +3833,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function renderFieldOptions() {
+        if (!fieldOptions) return;
         fieldOptions.innerHTML = allBotFields.map(field => `
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                 <input type="checkbox" value="${field}" ${botVisibleFields.includes(field) ? 'checked' : ''} style="accent-color: var(--accent-blue);">
@@ -3806,15 +3966,47 @@ document.addEventListener('DOMContentLoaded', () => {
         setInterval(updateAIMarketAnalysis, 30000);
     }
 
+    function refreshEditBotHyperliquidRow() {
+        const sel = document.getElementById('editBotExecutor');
+        const row = document.getElementById('editBotHlTestnetRow');
+        if (!sel || !row) return;
+        row.style.display = sel.value === 'hyperliquid' ? 'block' : 'none';
+    }
+
     function showEditBotModal(bot) {
         const modal = document.getElementById('editBotModal');
         if (!modal) return;
 
+        const cfg = bot.config || {};
+
         // Populate basic info
         document.getElementById('editBotId').value = bot.id;
-        document.getElementById('editBotSymbol').value = bot.config?.symbol || 'N/A';
+        document.getElementById('editBotSymbol').value = cfg.symbol || 'N/A';
         document.getElementById('editBotStrategy').value = bot.strategy || 'N/A';
-        document.getElementById('editBotAllocation').value = bot.config?.allocation || 0;
+        document.getElementById('editBotAllocation').value = cfg.allocation ?? cfg.capital_allocation ?? 0;
+
+        const ex = String(cfg.executor || 'paper').toLowerCase();
+        const executorEl = document.getElementById('editBotExecutor');
+        if (executorEl) {
+            executorEl.value = ex === 'hyperliquid' ? 'hyperliquid' : 'paper';
+        }
+        const hlTnEl = document.getElementById('editBotHlTestnet');
+        if (hlTnEl) {
+            if (Object.prototype.hasOwnProperty.call(cfg, 'hyperliquid_testnet')) {
+                hlTnEl.checked = !!cfg.hyperliquid_testnet;
+            } else {
+                hlTnEl.checked = true;
+            }
+        }
+        refreshEditBotHyperliquidRow();
+
+        const setChk = (id, key) => {
+            const el = document.getElementById(id);
+            if (el) el.checked = !!cfg[key];
+        };
+        setChk('editBotAnalysisApproved', 'analysis_approved');
+        setChk('editBotCandidateProduction', 'candidate_for_production');
+        setChk('editBotProductionReady', 'production_ready');
 
         // Reset all param containers
         document.getElementById('editEmaParams').style.display = 'none';
@@ -3844,9 +4036,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const botId = document.getElementById('editBotId').value;
         const strategy = document.getElementById('editBotStrategy').value.toLowerCase();
 
+        const executorVal = document.getElementById('editBotExecutor')?.value || 'paper';
+        const allocRaw = parseFloat(document.getElementById('editBotAllocation').value);
         const newConfig = {
-            allocation: parseFloat(document.getElementById('editBotAllocation').value)
+            allocation: Number.isFinite(allocRaw) ? allocRaw : 0,
+            executor: executorVal,
+            analysis_approved: !!document.getElementById('editBotAnalysisApproved')?.checked,
+            candidate_for_production: !!document.getElementById('editBotCandidateProduction')?.checked,
+            production_ready: !!document.getElementById('editBotProductionReady')?.checked,
         };
+
+        if (executorVal === 'hyperliquid') {
+            newConfig.hyperliquid_testnet = !!document.getElementById('editBotHlTestnet')?.checked;
+        }
 
         if (strategy.includes('ema_cross')) {
             newConfig.fast_ema = parseInt(document.getElementById('editBotFastEma').value);
@@ -3871,17 +4073,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchBots(); // Refresh table
             } else {
                 const err = await res.json();
-                alert('Error updating bot: ' + (err.detail || 'Unknown error'));
+                alert('Error al actualizar bot: ' + (err.detail || 'Error desconocido'));
             }
         } catch (error) {
             console.error('Update error:', error);
-            alert('Error connecting to server.');
+            alert('No se pudo conectar con el servidor.');
         }
     }
 
     const confirmEditBot = document.getElementById('confirmEditBot');
     if (confirmEditBot) {
         confirmEditBot.addEventListener('click', handleEditBotSubmit);
+    }
+    const editBotExecutorSelect = document.getElementById('editBotExecutor');
+    if (editBotExecutorSelect) {
+        editBotExecutorSelect.addEventListener('change', refreshEditBotHyperliquidRow);
     }
 
     // Initial load and periodic refresh

@@ -652,13 +652,20 @@ def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict
     }
 
 
+def _cfg_hyperliquid_testnet(cfg: dict) -> bool:
+    """True si Hyperliquid está en testnet (explícito en config o por defecto env)."""
+    conf = dict(cfg or {})
+    if "hyperliquid_testnet" in conf and conf.get("hyperliquid_testnet") is not None:
+        return bool(conf.get("hyperliquid_testnet"))
+    return os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"
+
+
 def _is_live_mainnet_config(cfg: dict) -> bool:
     conf = dict(cfg or {})
     executor = str(conf.get("executor") or "paper").strip().lower()
     if executor != "hyperliquid":
         return False
-    use_testnet = bool(conf.get("hyperliquid_testnet", os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"))
-    return not use_testnet
+    return not _cfg_hyperliquid_testnet(conf)
 
 
 def _analysis_gate_ok(cfg: dict) -> bool:
@@ -1644,11 +1651,19 @@ async def save_hyperliquid_settings(
     use_testnet = bool(payload.get("use_testnet", True))
     # Por defecto cifrar en BD solo si hay clave maestra; si no, .env en texto (compatibilidad).
     encrypt_db = bool(payload.get("encrypt_in_database", fernet_configured()))
+    keep_existing_signing_key = bool(payload.get("keep_existing_signing_key", False))
+    if not signing_key and keep_existing_signing_key:
+        _, sk_cur = get_hyperliquid_wallet_and_key()
+        signing_key = (sk_cur or "").strip()
 
     if not HyperliquidExecutor._is_valid_wallet(wallet):
         raise HTTPException(status_code=400, detail="Wallet inválida. Debe ser 0x + 40 hex")
     if not HyperliquidExecutor._is_valid_private_key(signing_key):
-        raise HTTPException(status_code=400, detail="Signing key inválida. Debe ser 0x + 64 hex")
+        raise HTTPException(
+            status_code=400,
+            detail="Signing key inválida o ausente. Debe ser 0x + 64 hex (API wallet / agente), "
+            "o marca conservar clave existente si ya estaba guardada.",
+        )
 
     if encrypt_db and not fernet_configured():
         raise HTTPException(
@@ -1717,6 +1732,11 @@ async def save_hyperliquid_settings(
         "saved": True,
         "wallet_masked": _mask_wallet(wallet),
         "use_testnet": use_testnet,
+        "encrypt_in_database": encrypt_db,
+        "crypto": {
+            "fernet_key_configured": fernet_configured(),
+            "encrypted_credentials_in_database": encrypted_blob_exists(db),
+        },
         "checks": {
             "selected_env": selected_env,
             "selected_env_auth_ok": selected_auth_ok,
@@ -2869,6 +2889,122 @@ async def list_bots(include_system: bool = True, db: Session = Depends(get_db)):
     return [bot for bot in db_bots if not _is_system_managed(bot)]
 
 
+@app.get("/api/bots/performance-summary")
+async def bots_performance_summary(
+    lookback_hours: int = 168,
+    min_scored_trades: int = 8,
+    db: Session = Depends(get_db),
+):
+    """
+    Métricas por bot en una ventana (por defecto 7 días) + readiness para producción
+    y checklist de seguridad para pasar a Hyperliquid mainnet.
+    """
+    since = datetime.utcnow() - timedelta(hours=max(1, int(lookback_hours)))
+    bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
+    trades = db.query(TradeDB).filter(TradeDB.time >= since).order_by(TradeDB.time.asc()).all()
+    open_critical = (
+        db.query(BotAlertDB)
+        .filter(BotAlertDB.acknowledged == False, BotAlertDB.level == "critical")
+        .all()
+    )
+    critical_map: dict = {}
+    for alert in open_critical:
+        critical_map.setdefault(alert.bot_id, 0)
+        critical_map[alert.bot_id] += 1
+
+    grouped: dict = {}
+    for trade in trades:
+        grouped.setdefault(trade.bot_id, []).append(trade)
+
+    results = []
+    for bot in bots:
+        cfg = dict(bot.config or {})
+        bot_trades = grouped.get(bot.id, [])
+        scored_pnls = [float(t.pnl or 0.0) for t in bot_trades if float(t.pnl or 0.0) != 0.0]
+        wins = sum(1 for p in scored_pnls if p > 0)
+        total_pnl = sum(float(t.pnl or 0.0) for t in bot_trades)
+        total_fees = sum(float(t.fee or 0.0) for t in bot_trades)
+        net_pnl = total_pnl - total_fees
+        win_rate = (wins / len(scored_pnls) * 100) if scored_pnls else 0.0
+        gross_profit = sum(max(p, 0.0) for p in scored_pnls)
+        gross_loss = abs(sum(min(p, 0.0) for p in scored_pnls))
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+        consecutive_losses = _compute_consecutive_losses(scored_pnls)
+
+        metrics = {
+            "total_trades": len(bot_trades),
+            "scored_trades": len(scored_pnls),
+            "wins": wins,
+            "losses": len(scored_pnls) - wins,
+            "win_rate": round(win_rate, 2),
+            "net_pnl": round(net_pnl, 6),
+            "profit_factor": round(profit_factor, 4),
+            "consecutive_losses": consecutive_losses,
+        }
+
+        readiness = _evaluate_production_readiness(
+            strategy=str(bot.strategy or ""),
+            metrics={
+                "scored_trades": len(scored_pnls),
+                "win_rate": win_rate,
+                "net_pnl": net_pnl,
+                "profit_factor": profit_factor,
+                "consecutive_losses": consecutive_losses,
+            },
+            critical_open_count=int(critical_map.get(bot.id, 0) or 0),
+            runtime_ready=str(bot.status or "").lower() == BotStatus.RUNNING,
+            min_scored_trades=min_scored_trades,
+        )
+
+        live_main = _is_live_mainnet_config(cfg)
+        gate_ok = _analysis_gate_ok(cfg)
+        executor = str(cfg.get("executor") or "paper").strip().lower()
+        if executor == "paper":
+            network_label = "PAPER"
+        elif executor == "hyperliquid":
+            network_label = "HL TESTNET" if _cfg_hyperliquid_testnet(cfg) else "HL MAINNET"
+        else:
+            network_label = executor.upper()
+
+        results.append(
+            {
+                "bot_id": bot.id,
+                "strategy": bot.strategy,
+                "status": bot.status,
+                "executor": executor,
+                "network_label": network_label,
+                "hyperliquid_testnet": _cfg_hyperliquid_testnet(cfg) if executor == "hyperliquid" else None,
+                "metrics_window_hours": int(lookback_hours),
+                "metrics": metrics,
+                "readiness": {
+                    "gate_ok": bool(readiness.get("gate_ok")),
+                    "label": readiness.get("label"),
+                    "summary": readiness.get("summary"),
+                    "blockers": readiness.get("blockers", [])[:6],
+                },
+                "mainnet_safety": {
+                    "is_live_mainnet": live_main,
+                    "analysis_gate_ok": gate_ok,
+                    "flags": {
+                        "analysis_approved": bool(cfg.get("analysis_approved")),
+                        "candidate_for_production": bool(cfg.get("candidate_for_production")),
+                        "production_ready": bool(cfg.get("production_ready")),
+                    },
+                    "can_start_live_without_force": (not live_main) or gate_ok,
+                    "promotion_checklist": [
+                        "Operar en paper o HL testnet hasta cumplir umbral de trades y win rate",
+                        "Revisar Net PnL y profit factor en la ventana de 7 días",
+                        "Sin alertas críticas abiertas",
+                        "Marcar en config: production_ready o analysis_approved antes de mainnet",
+                        "Iniciar mainnet con capital reducido y kill switch probado",
+                    ],
+                },
+            }
+        )
+
+    return {"lookback_hours": lookback_hours, "min_scored_trades": min_scored_trades, "bots": results}
+
+
 @app.get("/api/bot-presets")
 async def list_bot_presets_api():
     return {"presets": list_bot_presets()}
@@ -3109,7 +3245,10 @@ async def start_existing_bot(bot_id: str, payload: dict = None, db: Session = De
         raise HTTPException(status_code=404, detail="Bot not found in database")
     
     if bot_entry.is_archived:
-        raise HTTPException(status_code=400, detail="Cannot start an archived bot. Restore it first.")
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede iniciar un bot archivado. Restáuralo desde la cápsula primero.",
+        )
     
     # If already running in memory, treat as success (idempotent)
     if bot_id in bot_manager.active_bots:
@@ -3123,15 +3262,19 @@ async def start_existing_bot(bot_id: str, payload: dict = None, db: Session = De
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Live mainnet start blocked: analysis required first. "
-                    "Set one of [analysis_approved, candidate_for_production, production_ready] in bot config "
-                    "or pass force_start_live=true explicitly."
+                    "Bloqueo mainnet: este bot usa Hyperliquid en MAINNET y requiere análisis previo. "
+                    "Opciones: (1) En la config del bot activa analysis_approved, candidate_for_production o production_ready; "
+                    "(2) Cambia a testnet (hyperliquid_testnet: true); "
+                    "(3) Envía force_start_live: true en el POST solo si aceptas el riesgo."
                 ),
             )
 
     success = bot_manager.start_bot(bot_id, bot_entry.config)
     if not success:
-        raise HTTPException(status_code=400, detail="Bot failed to start")
+        raise HTTPException(
+            status_code=400,
+            detail="No se pudo iniciar el bot (p. ej. ya está en ejecución). Recarga la lista de bots.",
+        )
     return {"message": f"Bot {bot_id} started"}
 
 @app.get("/api/trades")

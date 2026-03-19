@@ -227,6 +227,10 @@
                                     <p id="botManagerInfo" style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
                                         Mis Bots: activos o en espera (no archivados).
                                     </p>
+                                    <p style="color: var(--text-muted); font-size: 0.72rem; margin-top: 6px; max-width: 920px; line-height: 1.45;">
+                                        <strong>Efectividad:</strong> columnas «Rendimiento» y «Seguridad» usan ventana de ~7 días en servidor (trades + umbrales de producción).
+                                        <strong>Mainnet:</strong> el arranque en HL mainnet exige flags <code>production_ready</code> / <code>analysis_approved</code> o confirmación explícita; mantén testnet hasta ver «APTO».
+                                    </p>
                                 </div>
                                 <div style="display: flex; gap: 1rem;">
                                     <button class="glass view-options-btn" data-target="bots">
@@ -267,7 +271,9 @@
                                                 <th>Asignación</th>
                                                 <th>PnL Realizado</th>
                                                 <th>Uptime</th>
-                                                <th>Éxito</th>
+                                                <th>Éxito (hist.)</th>
+                                                <th>Rendimiento (7d)</th>
+                                                <th>Red / Mainnet</th>
                                                 <th style="text-align: right;">Acciones</th>
                                             </tr>
                                         </thead>
@@ -609,32 +615,55 @@
                                     <div>
                                         <h3
                                             style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px;">
-                                            <i data-lucide="key" style="color: var(--accent-blue);"></i> Credenciales de
-                                            Exchange
+                                            <i data-lucide="key" style="color: var(--accent-blue);"></i> Hyperliquid — Billetera y firma
                                         </h3>
+                                        <p style="font-size: 0.85rem; color: var(--text-muted); margin: -0.75rem 0 1.25rem 0; line-height: 1.45;">
+                                            La <strong>dirección</strong> es tu cuenta en Hyperliquid. La <strong>clave de firma</strong> es la privada del <strong>API wallet / agente</strong> que creas en Hyperliquid (0x + 64 hex), <em>no</em> la frase semilla de la wallet principal.
+                                        </p>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>Exchange Directo</label>
+                                            <label>Exchange</label>
                                             <select id="settingsExchange" class="form-control">
-                                                <option value="hyperliquid" selected>Hyperliquid (Perpetuals)</option>
+                                                <option value="hyperliquid" selected>Hyperliquid (Perpetuos / USDC)</option>
                                             </select>
                                         </div>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>Wallet Address (0x...)</label>
+                                            <label>Dirección de billetera Hyperliquid</label>
                                             <input id="settingsWalletAddress" type="text" class="form-control"
-                                                placeholder="0x...">
+                                                placeholder="0x + 40 caracteres hex" autocomplete="off">
+                                            <small style="display:block; margin-top:6px; color: var(--text-muted);">Visible en la app de Hyperliquid; se guarda en .env en texto (pública).</small>
                                         </div>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>Signing Key (0x...)</label>
+                                            <label>Clave privada del API wallet (agente)</label>
                                             <input id="settingsSigningKey" type="password" class="form-control"
-                                                placeholder="0x...">
+                                                placeholder="0x + 64 caracteres hex" autocomplete="new-password">
+                                            <small id="settingsSigningKeyHelp" style="display:block; margin-top:6px; color: var(--text-muted);">Si ya hay clave guardada, puedes dejar el campo vacío para conservarla y solo cambiar dirección o testnet/mainnet.</small>
                                         </div>
                                         <div class="form-group" style="margin-bottom: 1.5rem;">
-                                            <label>Entorno por defecto</label>
+                                            <label>Entorno</label>
                                             <select id="settingsUseTestnet" class="form-control">
-                                                <option value="true">Testnet (simulación real)</option>
-                                                <option value="false">Mainnet (mercado real)</option>
+                                                <option value="true">Testnet (recomendado para pruebas)</option>
+                                                <option value="false">Mainnet (fondos reales)</option>
                                             </select>
                                         </div>
+
+                                        <div style="margin-bottom: 1.25rem; padding: 14px; border-radius: 10px; border: 1px solid rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.06);">
+                                            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent-blue); margin-bottom: 8px;">Seguridad — guardado cifrado</div>
+                                            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-weight: 500;">
+                                                <input type="checkbox" id="settingsEncryptCredentials" style="margin-top: 3px;">
+                                                <span>Guardar la clave de firma <strong>cifrada</strong> en la base de datos (recomendado). Requiere <code style="font-size:0.8em;">APP_CREDENTIALS_FERNET_KEY</code> en el servidor.</span>
+                                            </label>
+                                            <div id="settingsCryptoInfo" style="margin-top: 10px; font-size: 0.82rem; color: var(--text-secondary);">
+                                                Estado cifrado: …
+                                            </div>
+                                        </div>
+
+                                        <div class="form-group" style="margin-bottom: 1.5rem;">
+                                            <label>Token de administración (opcional)</label>
+                                            <input id="settingsSecretsAdminToken" type="password" class="form-control"
+                                                placeholder="Solo si definiste SECRETS_ADMIN_TOKEN en .env" autocomplete="off">
+                                            <small style="display:block; margin-top:6px; color: var(--text-muted);">Si está activo en el backend, se envía como cabecera <code style="font-size:0.8em;">X-Secrets-Admin-Token</code>.</small>
+                                        </div>
+
                                         <div id="settingsStatus" style="font-size: 0.9rem; color: var(--text-secondary); background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px;">
                                             Estado: cargando configuración...
                                         </div>
@@ -660,8 +689,7 @@
                                 <div
                                     style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05);">
                                     <button id="saveHyperliquidSettingsBtn" class="glass"
-                                        style="padding: 12px 32px; background: var(--accent-blue); color: white; border: none; font-weight: 700; cursor: pointer;">GUARDAR
-                                        Y VALIDAR CREDENCIALES</button>
+                                        style="padding: 12px 32px; background: var(--accent-blue); color: white; border: none; font-weight: 700; cursor: pointer;">GUARDAR, VALIDAR Y (opcional) CIFRAR</button>
                                 </div>
 
                                 <div style="margin-top: 1.5rem; padding: 14px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
@@ -861,7 +889,7 @@
                     <div id="editBotModal" class="modal-overlay" style="display: none;">
                         <div class="modal-content glass edit-bot-modal-content">
                             <div class="edit-bot-modal-header">
-                                <h2 style="margin: 0;">Edit Bot Configuration</h2>
+                                <h2 style="margin: 0;">Editar configuración del bot</h2>
                                 <i data-lucide="x" class="close-modal-btn"
                                     onclick="document.getElementById('editBotModal').style.display='none'"
                                     style="cursor: pointer;"></i>
@@ -922,8 +950,43 @@
                             </div>
 
                             <div class="form-group">
-                                <label>Allocation (USD)</label>
+                                <label>Asignación (USD)</label>
                                 <input type="number" id="editBotAllocation" class="form-control">
+                            </div>
+
+                            <div style="margin-top: 1rem; padding: 14px; border-radius: 10px; border: 1px solid rgba(59, 130, 246, 0.3); background: rgba(59, 130, 246, 0.06);">
+                                <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-blue); margin-bottom: 10px;">Ejecución Hyperliquid</div>
+                                <div class="form-group" style="margin-bottom: 0.85rem;">
+                                    <label>Executor</label>
+                                    <select id="editBotExecutor" class="form-control">
+                                        <option value="paper">Paper (simulado)</option>
+                                        <option value="hyperliquid">Hyperliquid (real)</option>
+                                    </select>
+                                </div>
+                                <div id="editBotHlTestnetRow" class="form-group" style="margin-bottom: 0;">
+                                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 500;">
+                                        <input type="checkbox" id="editBotHlTestnet" style="width: auto;">
+                                        <span>Hyperliquid en <strong>testnet</strong> (recomendado hasta validar estrategia)</span>
+                                    </label>
+                                    <small style="display: block; margin-top: 8px; color: var(--text-muted);">Si desmarcas con executor Hyperliquid, operarás en <strong>mainnet</strong> (fondos reales). El arranque puede exigir flags de análisis o confirmación forzada.</small>
+                                </div>
+                            </div>
+
+                            <div style="margin-top: 1rem; padding: 14px; border-radius: 10px; border: 1px solid rgba(16, 185, 129, 0.25); background: rgba(16, 185, 129, 0.05);">
+                                <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-emerald); margin-bottom: 10px;">Gates para mainnet seguro</div>
+                                <p style="font-size: 0.78rem; color: var(--text-secondary); margin: 0 0 12px 0; line-height: 1.4;">Marca cuando el bot haya pasado paper/testnet y revisión. Así el servidor permite iniciar en HL mainnet sin <code>force_start_live</code>.</p>
+                                <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin-bottom: 10px;">
+                                    <input type="checkbox" id="editBotAnalysisApproved" style="margin-top: 3px; width: auto;">
+                                    <span><code>analysis_approved</code> — Análisis / advisor aprobado</span>
+                                </label>
+                                <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin-bottom: 10px;">
+                                    <input type="checkbox" id="editBotCandidateProduction" style="margin-top: 3px; width: auto;">
+                                    <span><code>candidate_for_production</code> — Candidato a producción</span>
+                                </label>
+                                <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+                                    <input type="checkbox" id="editBotProductionReady" style="margin-top: 3px; width: auto;">
+                                    <span><code>production_ready</code> — Listo para capital real (marca solo si aceptas el riesgo)</span>
+                                </label>
                             </div>
 
                             <button id="confirmEditBot"
@@ -1004,7 +1067,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=6.1"></script>
+    <script src="/static/app.js?v=6.4"></script>
     <script>
         lucide.createIcons();
     </script>
