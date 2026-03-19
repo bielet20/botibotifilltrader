@@ -1,48 +1,86 @@
+# Stack completo: Postgres (Timescale) + Redis + API (FastAPI) + Worker (bot manager)
+# En .env deben existir al menos (para red Docker): DATABASE_URL=...@db/... y REDIS_URL=redis://redis:6379/0
+#   Ver .env.example
+# Uso:
+#   cp -n .env.example .env   # y edita secretos si aplica
+#   docker compose up -d --build
+#   Abre http://127.0.0.1:8000/  y  http://127.0.0.1:8000/docs
+#
+# Ver logs: docker compose logs -f api
+# Parar:    docker compose down
 
+name: aaa-bot-trading
 
 services:
   db:
     image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
     environment:
-      - POSTGRES_PASSWORD=trading_pass
-      - POSTGRES_USER=trading_user
-      - POSTGRES_DB=trading_db
+      POSTGRES_PASSWORD: trading_pass
+      POSTGRES_USER: trading_user
+      POSTGRES_DB: trading_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   redis:
     image: redis:7.2-alpine
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 5s
 
   api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
-      - "127.0.0.1:8001:8000"
-    env_file: .env
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    working_dir: /app
     volumes:
       - .:/app
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    # Placeholder command for a worker that runs independent bots
+    restart: unless-stopped
     command: python3 -m apps.bot_manager.manager
-    env_file: .env
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    working_dir: /app
     volumes:
       - .:/app
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:

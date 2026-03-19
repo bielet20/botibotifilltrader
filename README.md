@@ -26,11 +26,9 @@ A modular, scalable, and secure platform for assisted and automatic trading acro
    - Python 3.11+
    - [Optional] Ollama for local AI
 
-2. **Setup**:
-   ```bash
-   pip install -r requirements.txt
-   docker-compose up -d
-   ```
+2. **Setup** (elige uno):
+   - **Solo Python local:** `pip install -r requirements.txt` y `bash start.sh`
+   - **Todo en Docker (DB + Redis + API + worker):** ver sección *Docker desarrollo* más abajo
 
 3. **Documentation**:
    Refer to the `docs/` folder for:
@@ -111,6 +109,42 @@ bash scripts/api_runtime.sh restart
 bash scripts/api_runtime.sh status
 bash scripts/api_runtime.sh logs
 ```
+
+## 🐳 Docker desarrollo (stack completo)
+
+Levanta **Postgres (Timescale)**, **Redis**, **API** y **worker** con un solo comando.
+
+1. Crea `.env` desde la plantilla (imprescindible: `DATABASE_URL` con host `db` y `REDIS_URL` con host `redis`):
+   ```bash
+   cp .env.example .env
+   ```
+   En Docker debe quedar, como mínimo:
+   - `DATABASE_URL=postgresql://trading_user:trading_pass@db/trading_db`
+   - `REDIS_URL=redis://redis:6379/0`
+
+2. Arranca:
+   ```bash
+   docker compose up -d --build
+   ```
+   O con helper:
+   ```bash
+   bash scripts/docker_dev_stack.sh up
+   ```
+
+3. Prueba:
+   - Web: http://127.0.0.1:8000/
+   - Salud: http://127.0.0.1:8000/api/health
+   - Logs: `docker compose logs -f api`
+
+4. Parar:
+   ```bash
+   docker compose down
+   ```
+
+Notas:
+- Postgres y Redis quedan escuchando solo en **localhost** (`127.0.0.1:5432` y `:6379`).
+- La API publica **8000** en todas las interfaces del host (`8000:8000`).
+- El `docker-compose.yml` espera a que **db** y **redis** pasen healthcheck antes de subir **api** y **worker**.
 
 ## 🐳 Docker producción
 
