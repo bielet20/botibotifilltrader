@@ -11,6 +11,7 @@ import json
 import csv
 import io
 import urllib.request
+import urllib.parse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import ccxt.async_support as ccxt
@@ -84,6 +85,8 @@ _daily_blockers_lookback_hours = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY
 _daily_blockers_min_scored_trades = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_MIN_SCORED_TRADES", "8")))
 _daily_blockers_loop_running = False
 _daily_blockers_loop_task = None
+_market_regime_cache_ttl_sec = max(30, int(os.getenv("MARKET_REGIME_CACHE_TTL_SEC", "300")))
+_market_regime_cache: dict = {"updated_at": 0.0, "payload": None}
 
 
 def _project_root_path() -> str:
@@ -311,6 +314,89 @@ def _compute_candle_analysis(candles: list) -> dict:
         "avg_volume": round(avg_volume, 4),
         "last_close": round(last_close, 6),
     }
+
+
+def _regime_from_analysis(analysis: dict) -> str:
+    trend_pct = float((analysis or {}).get("trend_pct") or 0.0)
+    volatility_pct = float((analysis or {}).get("volatility_pct") or 0.0)
+    if trend_pct >= 2.5:
+        return "bullish"
+    if trend_pct <= -2.5:
+        return "bearish"
+    if abs(trend_pct) < 1.2 and volatility_pct >= 1.8:
+        return "sideways_volatile"
+    return "sideways"
+
+
+def _fetch_binance_btc_candles(limit: int = 240) -> list:
+    safe_limit = max(48, min(int(limit or 240), 1000))
+    params = urllib.parse.urlencode(
+        {"symbol": "BTCUSDT", "interval": "1h", "limit": safe_limit}
+    )
+    url = f"https://api.binance.com/api/v3/klines?{params}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+
+    candles = []
+    for row in raw or []:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        open_time_ms = int(row[0] or 0)
+        candles.append(
+            {
+                "time": datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc).isoformat(),
+                "open": float(row[1] or 0.0),
+                "high": float(row[2] or 0.0),
+                "low": float(row[3] or 0.0),
+                "close": float(row[4] or 0.0),
+                "volume": float(row[5] or 0.0),
+            }
+        )
+    return candles
+
+
+def _get_market_regime_context() -> dict:
+    now_ts = _time.time()
+    cache_age = now_ts - float(_market_regime_cache.get("updated_at") or 0.0)
+    cached_payload = _market_regime_cache.get("payload")
+    if cached_payload and cache_age <= _market_regime_cache_ttl_sec:
+        return dict(cached_payload)
+
+    source = "fallback"
+    candles = _load_imported_candles("BTC/USDT", "1h")
+    if len(candles) >= 48:
+        source = "imported"
+    else:
+        candles = []
+        try:
+            candles = _fetch_binance_btc_candles(limit=240)
+            source = "live"
+        except Exception as fetch_err:
+            print(f"[MarketRegime] failed to fetch live BTC candles: {fetch_err}")
+
+    if candles:
+        analysis = _compute_candle_analysis(candles[-240:])
+        regime = _regime_from_analysis(analysis)
+        payload = {
+            "regime": regime,
+            "trend_pct": float(analysis.get("trend_pct") or 0.0),
+            "volatility_pct": float(analysis.get("volatility_pct") or 0.0),
+            "source": source,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    else:
+        payload = {
+            "regime": "mixed",
+            "trend_pct": 0.0,
+            "volatility_pct": 0.0,
+            "source": "fallback",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    _market_regime_cache["updated_at"] = now_ts
+    _market_regime_cache["payload"] = dict(payload)
+    return payload
 
 
 def _import_file_path(symbol: str, timeframe: str) -> str:
@@ -684,8 +770,11 @@ def _evaluate_production_readiness(
     critical_open_count: int,
     runtime_ready: bool,
     min_scored_trades: int,
+    market_regime_context: dict | None = None,
 ) -> dict:
     strategy_l = str(strategy or "").strip().lower()
+    regime_ctx = dict(market_regime_context or {})
+    regime = str(regime_ctx.get("regime") or "mixed").strip().lower()
 
     # Strategy-aware thresholds: tuned to accelerate promotion without weakening safety.
     min_win_rate = 55.0
@@ -700,6 +789,28 @@ def _evaluate_production_readiness(
         min_win_rate = 57.0
         min_profit_factor = 1.06
         min_trades_required = max(10, int(min_scored_trades))
+
+    # Regime-aware dynamic guardrails (bull/bear/sideways).
+    strategy_is_trend = any(k in strategy_l for k in ["ema", "technical", "adaptive"])
+    strategy_is_mean_reversion = any(k in strategy_l for k in ["grid", "pair"])
+    if regime == "bullish":
+        if strategy_is_trend:
+            min_win_rate -= 1.0
+            min_trades_required = max(5, min_trades_required - 1)
+        elif strategy_is_mean_reversion:
+            min_profit_factor += 0.02
+    elif regime == "bearish":
+        if strategy_is_mean_reversion:
+            min_win_rate -= 1.0
+            min_trades_required = max(5, min_trades_required - 1)
+        elif strategy_is_trend:
+            min_profit_factor += 0.03
+            min_trades_required = min_trades_required + 1
+    elif regime == "sideways_volatile":
+        min_profit_factor += 0.03
+        min_trades_required = min_trades_required + 1
+    elif regime == "sideways":
+        min_profit_factor += 0.01
 
     scored_trades = int(metrics.get("scored_trades") or 0)
     win_rate = float(metrics.get("win_rate") or 0.0)
@@ -774,6 +885,7 @@ def _evaluate_production_readiness(
         "label": "APTO PRODUCCION" if gate_ok else "NO APTO / BLOQUEADO",
         "summary": summary,
         "strategy": strategy,
+        "market_regime": regime,
         "thresholds": {
             "min_scored_trades": min_trades_required,
             "min_win_rate": min_win_rate,
@@ -921,6 +1033,7 @@ def _build_production_preparation_patch(*, item: dict, min_scored_trades: int) -
 
 def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_trades: int) -> dict:
     since = datetime.utcnow() - timedelta(hours=lookback_hours)
+    market_regime_context = _get_market_regime_context()
     bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
     trades = db.query(TradeDB).filter(TradeDB.time >= since).order_by(TradeDB.time.asc()).all()
     open_critical_alerts = (
@@ -984,6 +1097,7 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
             critical_open_count=critical_open_count,
             runtime_ready=runtime_ready,
             min_scored_trades=min_scored_trades,
+            market_regime_context=market_regime_context,
         )
         candidate_core = bool(readiness.get("gate_ok"))
 
@@ -1017,6 +1131,7 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
     return {
         "window_hours": lookback_hours,
         "min_scored_trades": min_scored_trades,
+        "market_regime": market_regime_context,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "bots_analyzed": len(results),
@@ -2900,6 +3015,7 @@ async def bots_performance_summary(
     y checklist de seguridad para pasar a Hyperliquid mainnet.
     """
     since = datetime.utcnow() - timedelta(hours=max(1, int(lookback_hours)))
+    market_regime_context = _get_market_regime_context()
     bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
     trades = db.query(TradeDB).filter(TradeDB.time >= since).order_by(TradeDB.time.asc()).all()
     open_critical = (
@@ -2954,6 +3070,7 @@ async def bots_performance_summary(
             critical_open_count=int(critical_map.get(bot.id, 0) or 0),
             runtime_ready=str(bot.status or "").lower() == BotStatus.RUNNING,
             min_scored_trades=min_scored_trades,
+            market_regime_context=market_regime_context,
         )
 
         live_main = _is_live_mainnet_config(cfg)
@@ -2980,6 +3097,7 @@ async def bots_performance_summary(
                     "gate_ok": bool(readiness.get("gate_ok")),
                     "label": readiness.get("label"),
                     "summary": readiness.get("summary"),
+                    "market_regime": readiness.get("market_regime"),
                     "blockers": readiness.get("blockers", [])[:6],
                 },
                 "mainnet_safety": {
@@ -3002,7 +3120,12 @@ async def bots_performance_summary(
             }
         )
 
-    return {"lookback_hours": lookback_hours, "min_scored_trades": min_scored_trades, "bots": results}
+    return {
+        "lookback_hours": lookback_hours,
+        "min_scored_trades": min_scored_trades,
+        "market_regime": market_regime_context,
+        "bots": results,
+    }
 
 
 @app.get("/api/bot-presets")

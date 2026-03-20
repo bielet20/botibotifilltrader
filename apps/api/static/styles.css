@@ -531,7 +531,7 @@ th {
 }
 
 .control-center-card .glass-content {
-    min-height: 560px;
+    min-height: 500px;
 }
 
 .control-center-card .institutional-table th,
@@ -578,7 +578,51 @@ th {
 }
 
 .control-center-card .institutional-table td:last-child {
-    min-width: 320px;
+    min-width: 250px;
+}
+
+.control-center-card.is-compact .glass-content {
+    min-height: 430px;
+    padding: 0.85rem 1rem !important;
+}
+
+.control-center-card.is-compact #runtimeOpsOverviewStatus,
+.control-center-card.is-compact #intelligenceTopHelp {
+    margin-bottom: 8px !important;
+    padding: 6px 8px !important;
+    font-size: 0.71rem !important;
+}
+
+.control-center-card.is-compact #intelligenceTopSummary {
+    gap: 8px !important;
+    margin-bottom: 8px !important;
+}
+
+.control-center-card.is-compact #intelligenceTopSummary > div {
+    padding: 8px !important;
+}
+
+.control-center-card.is-compact .scrollable-table-container--large {
+    max-height: 68vh;
+}
+
+.control-center-card.is-compact .institutional-table th,
+.control-center-card.is-compact .institutional-table td {
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+    font-size: 0.74rem;
+}
+
+.control-center-card.is-compact .institutional-table td:last-child {
+    min-width: 210px;
+}
+
+.control-center-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: rgba(13, 21, 38, 0.95);
+    backdrop-filter: blur(4px);
 }
 
 /* Tab Sections */
@@ -667,7 +711,7 @@ main.sidebar-collapsed {
 }
 
 .scrollable-table-container--large {
-    max-height: 65vh;
+    max-height: 58vh;
     overflow-y: auto;
     overflow-x: auto;
     padding-right: 8px;

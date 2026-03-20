@@ -267,6 +267,63 @@ def _select_trailing_ladder(
     return BALANCED_TRAILING_LADDER, "auto_balanced"
 
 
+def _compute_dynamic_exit_thresholds(
+    *,
+    symbol_volatility_pct: float,
+    vol_low_threshold_pct: float,
+    vol_high_threshold_pct: float,
+    stop_loss_pct: float,
+    hard_take_profit_pct: float,
+    trailing_trigger_pct: float,
+    trailing_retrace_pct: float,
+    min_net_pnl: float,
+) -> dict:
+    """
+    Derive per-position effective TP/SL/trailing thresholds from current volatility.
+    Goal: preserve gains sooner in high-volatility environments and reduce loss tails.
+    """
+    vol = max(0.0, float(symbol_volatility_pct or 0.0))
+    low = max(1e-9, float(vol_low_threshold_pct or 0.0))
+    high = max(low, float(vol_high_threshold_pct or 0.0))
+
+    # Normalize volatility to [0,1] range between low and high thresholds.
+    if high > low:
+        vol_norm = max(0.0, min((vol - low) / (high - low), 1.0))
+    else:
+        vol_norm = 0.0
+
+    # High volatility: tighter SL and earlier TP capture.
+    # Low volatility: allow trend a bit more room.
+    stop_loss_factor = 1.10 - (0.50 * vol_norm)  # 1.10 -> 0.60
+    take_profit_factor = 1.05 - (0.35 * vol_norm)  # 1.05 -> 0.70
+    trailing_trigger_factor = 1.0 - (0.30 * vol_norm)  # 1.0 -> 0.70
+    trailing_retrace_factor = 1.05 - (0.45 * vol_norm)  # 1.05 -> 0.60
+
+    effective_stop_loss_pct = max(0.0025, float(stop_loss_pct or 0.0) * stop_loss_factor)
+    effective_hard_take_profit_pct = max(0.0035, float(hard_take_profit_pct or 0.0) * take_profit_factor)
+    effective_trailing_trigger_pct = max(0.003, float(trailing_trigger_pct or 0.0) * trailing_trigger_factor)
+    effective_trailing_retrace_pct = max(0.0015, float(trailing_retrace_pct or 0.0) * trailing_retrace_factor)
+
+    # Breakeven lock arms once the position had enough positive excursion.
+    breakeven_arm_gain_pct = max(
+        effective_trailing_trigger_pct * 0.6,
+        vol * 1.25,
+        0.0025,
+    )
+    # Small net cushion to avoid round-trip from winner to loser.
+    breakeven_min_net_pnl = max(0.0, float(min_net_pnl or 0.0) * 0.20)
+
+    return {
+        "effective_stop_loss_pct": effective_stop_loss_pct,
+        "effective_hard_take_profit_pct": effective_hard_take_profit_pct,
+        "effective_trailing_trigger_pct": effective_trailing_trigger_pct,
+        "effective_trailing_retrace_pct": effective_trailing_retrace_pct,
+        "breakeven_arm_gain_pct": breakeven_arm_gain_pct,
+        "breakeven_min_net_pnl": breakeven_min_net_pnl,
+        "volatility_normalized": vol_norm,
+    }
+
+
 async def run(
     execute: bool,
     min_net_pnl: float,
@@ -446,20 +503,56 @@ async def run(
                 trailing_ladder=ladder_for_position,
             )
 
+            dynamic_thresholds = _compute_dynamic_exit_thresholds(
+                symbol_volatility_pct=symbol_volatility_pct,
+                vol_low_threshold_pct=vol_low_threshold_pct,
+                vol_high_threshold_pct=vol_high_threshold_pct,
+                stop_loss_pct=stop_loss_pct,
+                hard_take_profit_pct=hard_take_profit_pct,
+                trailing_trigger_pct=trailing_trigger_pct,
+                trailing_retrace_pct=effective_trailing_retrace_pct,
+                min_net_pnl=min_net_pnl,
+            )
+            effective_stop_loss_pct = _to_float(dynamic_thresholds.get("effective_stop_loss_pct"), stop_loss_pct)
+            effective_hard_take_profit_pct = _to_float(
+                dynamic_thresholds.get("effective_hard_take_profit_pct"), hard_take_profit_pct
+            )
+            effective_trailing_trigger_pct = _to_float(
+                dynamic_thresholds.get("effective_trailing_trigger_pct"), trailing_trigger_pct
+            )
+            effective_trailing_retrace_pct = _to_float(
+                dynamic_thresholds.get("effective_trailing_retrace_pct"), effective_trailing_retrace_pct
+            )
+            breakeven_arm_gain_pct = _to_float(dynamic_thresholds.get("breakeven_arm_gain_pct"), 0.0)
+            breakeven_min_net_pnl = _to_float(dynamic_thresholds.get("breakeven_min_net_pnl"), 0.0)
+
             close_reason = ""
             # Safety-first: cap downside before evaluating profit exits.
-            if stop_loss_pct > 0 and adverse_pct >= stop_loss_pct:
+            if effective_stop_loss_pct > 0 and adverse_pct >= effective_stop_loss_pct:
                 close_reason = "stop_loss_pct"
+            elif (
+                symbol_volatility_pct >= volatility_high_threshold_pct > 0
+                and effective_stop_loss_pct > 0
+                and adverse_pct >= (effective_stop_loss_pct * 0.65)
+                and estimated_net_pnl < 0
+            ):
+                close_reason = "volatility_protective_stop"
             elif max_net_loss_abs > 0 and estimated_net_pnl <= -abs(max_net_loss_abs):
                 close_reason = "max_net_loss_abs"
             elif estimated_net_pnl >= min_net_pnl and estimated_net_profit_pct >= min_net_profit_pct:
-                if gain_pct >= hard_take_profit_pct > 0:
+                if gain_pct >= effective_hard_take_profit_pct > 0:
                     close_reason = "hard_take_profit_pct"
                 elif (
-                    peak_gain_pct >= trailing_trigger_pct > 0
+                    peak_gain_pct >= effective_trailing_trigger_pct > 0
                     and retrace_pct >= effective_trailing_retrace_pct > 0
                 ):
                     close_reason = "trailing_take_profit"
+            elif (
+                peak_gain_pct >= breakeven_arm_gain_pct > 0
+                and estimated_net_pnl <= breakeven_min_net_pnl
+                and retrace_pct >= max(effective_trailing_retrace_pct * 0.75, 0.0015)
+            ):
+                close_reason = "breakeven_protect"
 
             position_state.update(
                 {
@@ -488,8 +581,14 @@ async def run(
                 "peak_gain_pct": round(peak_gain_pct, 6),
                 "retrace_pct": round(retrace_pct, 6),
                 "effective_trailing_retrace_pct": round(effective_trailing_retrace_pct, 6),
+                "effective_trailing_trigger_pct": round(effective_trailing_trigger_pct, 6),
+                "effective_hard_take_profit_pct": round(effective_hard_take_profit_pct, 6),
+                "effective_stop_loss_pct": round(effective_stop_loss_pct, 6),
+                "breakeven_arm_gain_pct": round(breakeven_arm_gain_pct, 6),
+                "breakeven_min_net_pnl": round(breakeven_min_net_pnl, 6),
                 "trailing_profile_resolved": resolved_profile,
                 "volatility_pct": round(symbol_volatility_pct, 6),
+                "volatility_normalized": round(_to_float(dynamic_thresholds.get("volatility_normalized"), 0.0), 6),
                 "trailing_ladder_used": ladder_for_position,
                 "unrealized_pnl": upnl,
                 "funding_pnl": round(funding_pnl, 6),
@@ -537,8 +636,14 @@ async def run(
                                 "peak_gain_pct": round(peak_gain_pct, 6),
                                 "retrace_pct": round(retrace_pct, 6),
                                 "effective_trailing_retrace_pct": round(effective_trailing_retrace_pct, 6),
+                                "effective_trailing_trigger_pct": round(effective_trailing_trigger_pct, 6),
+                                "effective_hard_take_profit_pct": round(effective_hard_take_profit_pct, 6),
+                                "effective_stop_loss_pct": round(effective_stop_loss_pct, 6),
+                                "breakeven_arm_gain_pct": round(breakeven_arm_gain_pct, 6),
+                                "breakeven_min_net_pnl": round(breakeven_min_net_pnl, 6),
                                 "trailing_profile_resolved": resolved_profile,
                                 "volatility_pct": round(symbol_volatility_pct, 6),
+                                "volatility_normalized": round(_to_float(dynamic_thresholds.get("volatility_normalized"), 0.0), 6),
                                 "close_reason": close_reason,
                                 "order_id": order.get("id"),
                                 "status": order.get("status"),

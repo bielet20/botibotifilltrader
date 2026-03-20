@@ -103,10 +103,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const intelligenceTopSummary = document.getElementById('intelligenceTopSummary');
     const intelligenceTopTableBody = document.getElementById('intelligenceTopTableBody');
     const refreshIntelligenceTop = document.getElementById('refreshIntelligenceTop');
+    const toggleControlCompactBtn = document.getElementById('toggleControlCompactBtn');
     const botTrafficLightHeader = document.getElementById('botTrafficLightHeader');
     const botTrafficLightSummary = document.getElementById('botTrafficLightSummary');
     const botTrafficLightList = document.getElementById('botTrafficLightList');
     const toggleRuntimeOpsOverviewBtn = document.getElementById('toggleRuntimeOpsOverviewBtn');
+    const controlCenterCard = document.querySelector('.control-center-card');
     const runtimeOpsOverviewStatus = document.getElementById('runtimeOpsOverviewStatus');
     const settingsWalletAddressInput = document.getElementById('settingsWalletAddress');
     const settingsSigningKeyInput = document.getElementById('settingsSigningKey');
@@ -139,6 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let botPresets = [];
     let advisorMap = {};
     let assetAdvisorMap = {};
+    const HIGH_STRATEGIC_THRESHOLD_PCT = 90;
     /** Si ya existe signing key en servidor (.env o BD cifrada), se puede guardar sin reescribirla. */
     let hlSigningKeyPresent = false;
 
@@ -165,6 +168,31 @@ document.addEventListener('DOMContentLoaded', () => {
         if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
         if (d && typeof d === 'object') return JSON.stringify(d);
         return d || 'Error desconocido';
+    }
+
+    function setControlCenterCompact(enabled) {
+        if (!controlCenterCard || !toggleControlCompactBtn) return;
+        const isCompact = !!enabled;
+        controlCenterCard.classList.toggle('is-compact', isCompact);
+        toggleControlCompactBtn.textContent = isCompact ? 'MODO COMPACTO ON' : 'MODO COMPACTO OFF';
+        toggleControlCompactBtn.style.borderColor = isCompact ? 'var(--accent-emerald)' : '#facc15';
+        toggleControlCompactBtn.style.color = isCompact ? 'var(--accent-emerald)' : '#facc15';
+        try {
+            window.localStorage.setItem('control_center_compact_mode', isCompact ? '1' : '0');
+        } catch (_err) {
+            // ignore storage errors
+        }
+    }
+
+    function initControlCenterCompactMode() {
+        if (!controlCenterCard || !toggleControlCompactBtn) return;
+        let compactSaved = false;
+        try {
+            compactSaved = window.localStorage.getItem('control_center_compact_mode') === '1';
+        } catch (_err) {
+            compactSaved = false;
+        }
+        setControlCenterCompact(compactSaved);
     }
 
     /** Inicio de bot con reintento si el backend bloquea mainnet sin análisis. */
@@ -2455,6 +2483,41 @@ document.addEventListener('DOMContentLoaded', () => {
         alert(`Produccion activada para ${data.bot_id}`);
     }
 
+    async function forceMainnetForHighStrategicBot(botId, strategicPct) {
+        return new Promise((resolve) => {
+            showCustomConfirm(
+                'Activar por recomendacion estrategica alta',
+                `El bot ${botId} tiene recomendacion estrategica ${strategicPct}%. Se aplicara configuracion mainnet (Hyperliquid + flags de produccion) y luego se intentara activar en produccion. Continuar?`,
+                async () => {
+                    try {
+                        const patchPayload = {
+                            executor: 'hyperliquid',
+                            hyperliquid_testnet: false,
+                            analysis_approved: true,
+                            candidate_for_production: true,
+                            production_ready: true,
+                        };
+                        const patchResp = await fetch(`/api/bots/${botId}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(patchPayload),
+                        });
+                        if (!patchResp.ok) {
+                            const patchErr = await patchResp.json().catch(() => ({}));
+                            throw new Error(patchErr.detail || 'No se pudo aplicar configuracion mainnet');
+                        }
+                        await activateProductionForBot(botId);
+                    } catch (error) {
+                        console.error('Error forcing mainnet from strategic signal:', error);
+                        alert(`No se pudo forzar mainnet para ${botId}: ${error.message}`);
+                    } finally {
+                        resolve();
+                    }
+                }
+            );
+        });
+    }
+
     async function loadBotPresets() {
         if (!newBotPreset) return;
 
@@ -2534,6 +2597,40 @@ document.addEventListener('DOMContentLoaded', () => {
         const winRate = Number(metrics.win_rate || 0);
         const scoredTrades = Number(metrics.scored_trades || 0);
         return (netPnl * 10) + winRate + (scoredTrades * 0.1);
+    }
+
+    function computeStrategicRecommendationPct(item = {}, minScoredTrades = 8) {
+        const metrics = item.metrics || {};
+        const recommendationLevel = String((item.recommendation || {}).level || '').toLowerCase();
+        const scoredTrades = Math.max(0, Number(metrics.scored_trades || 0));
+        const winRate = Math.max(0, Number(metrics.win_rate || 0));
+        const netPnl = Number(metrics.net_pnl || 0);
+        const criticalAlerts = Math.max(0, Number(item.open_critical_alerts || item.critical_open_alerts || 0));
+        const runtimeReady = !!item.runtime_ready;
+
+        const minTradesSafe = Math.max(1, Number(minScoredTrades || 8));
+        const tradeComponent = Math.min(scoredTrades / minTradesSafe, 1) * 25;
+        const winRateComponent = Math.min(winRate / 100, 1) * 35;
+        const pnlComponent = netPnl <= 0 ? 0 : Math.min(Math.log10(1 + netPnl) / 2, 1) * 20;
+        const runtimeBonus = runtimeReady ? 5 : 0;
+        const levelBonus = recommendationLevel === 'offensive'
+            ? 15
+            : recommendationLevel === 'maintain'
+                ? 10
+                : recommendationLevel === 'defensive'
+                    ? 4
+                    : 0;
+        const alertPenalty = Math.min(criticalAlerts * 8, 30);
+
+        const raw = tradeComponent + winRateComponent + pnlComponent + runtimeBonus + levelBonus - alertPenalty;
+        return Math.max(0, Math.min(100, Math.round(raw)));
+    }
+
+    function truncateUiText(value, maxLen = 96) {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        if (text.length <= maxLen) return text;
+        return `${text.slice(0, Math.max(1, maxLen - 1)).trimEnd()}…`;
     }
 
     function sortInsightsRows(rows = []) {
@@ -2633,6 +2730,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const status = String(item.status || '-').toUpperCase();
             const runtime = item.runtime_ready ? 'RUNNING' : 'STOPPED';
             const titleLabel = readiness.ready ? 'APTO PARA PRODUCCION' : 'BLOQUEADO PRODUCCION';
+            const strategicPct = computeStrategicRecommendationPct(item, selectedMinTrades);
+            const strategicColor = strategicPct >= HIGH_STRATEGIC_THRESHOLD_PCT ? 'var(--accent-emerald)' : '#facc15';
             return `
                 <div style="border:1px solid rgba(255,255,255,0.08); border-left:4px solid ${readiness.color}; border-radius:10px; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.02);">
                     <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -2645,6 +2744,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div>Trades validos<br><strong>${m.scored_trades ?? 0}</strong></div>
                         <div>Win Rate<br><strong>${m.win_rate ?? 0}%</strong></div>
                         <div>Net PnL<br><strong style="color:${pnlColor};">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</strong></div>
+                    </div>
+                    <div style="font-size:0.72rem; margin-top:8px;">
+                        Recomendacion estrategica:
+                        <strong style="color:${strategicColor};">${strategicPct}%</strong>
+                        ${strategicPct >= HIGH_STRATEGIC_THRESHOLD_PCT ? '<span style="margin-left:6px; font-size:0.66rem; color: var(--accent-emerald);">ALTA (mainnet candidata)</span>' : ''}
                     </div>
                 </div>
             `;
@@ -2826,6 +2930,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const suggested = rec.suggested_params || {};
             const levelInfo = recommendationLevelLabel(rec.level);
             const readiness = buildProductionReadiness(item, selectedMinTrades);
+            const readinessReasonPreview = truncateUiText(readiness.reasonText, 86);
+            const strategicPct = computeStrategicRecommendationPct(item, selectedMinTrades);
+            const strategicHigh = strategicPct >= HIGH_STRATEGIC_THRESHOLD_PCT;
+            const canActivateMainnet = readiness.ready || strategicHigh;
             const payloadAttr = JSON.stringify(suggested).replace(/'/g, '&apos;');
             const hasSuggested = Object.keys(suggested).length > 0;
             const netPnl = Number(m.net_pnl || 0);
@@ -2845,14 +2953,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td style="color:${alertCount > 0 ? 'var(--accent-ruby)' : 'var(--text-secondary)'};">${alertCount}</td>
                     <td>
                         <span style="font-size:0.66rem; border:1px solid ${readiness.color}; color:${readiness.color}; border-radius:10px; padding:2px 7px;">${readiness.label}</span>
-                        <div style="font-size:0.64rem; color: var(--text-muted); margin-top:3px; max-width:180px;">${readiness.reasonText}</div>
+                        <div style="font-size:0.64rem; color: var(--text-muted); margin-top:3px; max-width:220px;" title="${String(readiness.reasonText || '').replace(/"/g, '&quot;')}">${readinessReasonPreview || '-'}</div>
+                        <div style="font-size:0.64rem; margin-top:4px; color:${strategicHigh ? 'var(--accent-emerald)' : 'var(--text-secondary)'};">
+                            Estrategica: <strong>${strategicPct}%</strong>${strategicHigh ? ' · ALTA' : ''}
+                        </div>
                     </td>
                     <td style="text-align:right;">
                         <div style="display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap;">
                             <button class="validate-test-bot" data-bot-id="${item.bot_id}" style="padding:4px 8px; border:1px solid #facc15; color:#facc15; background: transparent; border-radius:7px; cursor:pointer; font-size:0.68rem;">VALIDAR</button>
                             <button class="apply-test-recommendation" data-bot-id="${item.bot_id}" data-payload='${payloadAttr}' ${hasSuggested ? '' : 'disabled'} style="padding:4px 8px; border:1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; border-radius:7px; cursor:${hasSuggested ? 'pointer' : 'not-allowed'}; font-size:0.68rem; opacity:${hasSuggested ? '1' : '0.5'};">AJUSTAR</button>
                             <button class="start-test-bot" data-bot-id="${item.bot_id}" style="padding:4px 8px; border:1px solid var(--accent-emerald); color: var(--accent-emerald); background: transparent; border-radius:7px; cursor:pointer; font-size:0.68rem;">INICIAR</button>
-                            <button class="activate-prod-bot" data-bot-id="${item.bot_id}" ${readiness.ready ? '' : 'disabled'} style="padding:4px 8px; border:1px solid ${readiness.ready ? 'var(--accent-emerald)' : 'rgba(239,68,68,0.55)'}; color: ${readiness.ready ? 'var(--accent-emerald)' : 'rgba(239,68,68,0.75)'}; background: ${readiness.ready ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.06)'}; border-radius:7px; cursor:${readiness.ready ? 'pointer' : 'not-allowed'}; font-size:0.68rem; opacity:${readiness.ready ? '1' : '0.75'};">${readiness.ready ? 'PROD' : 'BLOQ'}</button>
+                            <button class="activate-prod-bot" data-bot-id="${item.bot_id}" data-strategic-high="${strategicHigh ? '1' : '0'}" data-readiness-ready="${readiness.ready ? '1' : '0'}" data-strategic-pct="${strategicPct}" ${canActivateMainnet ? '' : 'disabled'} style="padding:4px 8px; border:1px solid ${readiness.ready ? 'var(--accent-emerald)' : (strategicHigh ? '#facc15' : 'rgba(239,68,68,0.55)')}; color: ${readiness.ready ? 'var(--accent-emerald)' : (strategicHigh ? '#facc15' : 'rgba(239,68,68,0.75)')}; background: ${readiness.ready ? 'rgba(16,185,129,0.08)' : (strategicHigh ? 'rgba(250,204,21,0.10)' : 'rgba(239,68,68,0.06)')}; border-radius:7px; cursor:${canActivateMainnet ? 'pointer' : 'not-allowed'}; font-size:0.68rem; opacity:${canActivateMainnet ? '1' : '0.75'};">${readiness.ready ? 'PROD' : (strategicHigh ? 'MAINNET' : 'BLOQ')}</button>
                         </div>
                     </td>
                 </tr>
@@ -2880,6 +2991,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const summary = payload.summary || {};
             const rows = Array.isArray(payload.results) ? payload.results : [];
             const orderedRows = sortInsightsRows(rows);
+            const regimeCtx = payload.market_regime || {};
+            const regimeLabelMap = {
+                bullish: 'ALCISTA',
+                bearish: 'BAJISTA',
+                sideways: 'LATERAL',
+                sideways_volatile: 'LATERAL VOLATIL',
+                mixed: 'MIXTO',
+            };
+            const regimeKey = String(regimeCtx.regime || 'mixed').toLowerCase();
+            const regimeLabel = regimeLabelMap[regimeKey] || regimeKey.toUpperCase();
+            const regimeColor = regimeKey === 'bullish'
+                ? 'var(--accent-emerald)'
+                : regimeKey === 'bearish'
+                    ? 'var(--accent-ruby)'
+                    : '#facc15';
 
             try {
                 renderIntelligenceTop(summary, orderedRows, selectedWindow, selectedMinTrades);
@@ -2904,11 +3030,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const header = `
-                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02); display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px;">
+                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02); display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:8px;">
                     <div style="font-size:0.74rem; color: var(--text-secondary);">Ventana<br><strong>${selectedWindow}h</strong></div>
                     <div style="font-size:0.74rem; color: var(--text-secondary);">Mínimo trades<br><strong>${selectedMinTrades}</strong></div>
                     <div style="font-size:0.74rem; color: var(--accent-emerald);">Aptos producción<br><strong>${summary.production_candidates ?? 0}</strong></div>
                     <div style="font-size:0.74rem; color: var(--accent-ruby);">Alertas críticas<br><strong>${summary.critical_alerts_open ?? 0}</strong></div>
+                    <div style="font-size:0.74rem; color: ${regimeColor};">Régimen mercado<br><strong>${regimeLabel}</strong></div>
                 </div>
             `;
 
@@ -3390,7 +3517,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const botId = activateProdBotBtn.dataset.botId;
             if (!botId) return;
             try {
-                await activateProductionForBot(botId);
+                const strategicHigh = activateProdBotBtn.dataset.strategicHigh === '1';
+                const readinessReady = activateProdBotBtn.dataset.readinessReady === '1';
+                const strategicPct = Number(activateProdBotBtn.dataset.strategicPct || 0);
+                if (strategicHigh && !readinessReady) {
+                    await forceMainnetForHighStrategicBot(botId, strategicPct);
+                } else {
+                    await activateProductionForBot(botId);
+                }
             } catch (error) {
                 console.error('Error activating production bot:', error);
                 alert('No se pudo activar en producción: ' + error.message);
@@ -3425,6 +3559,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (toggleRuntimeOpsOverviewBtn) {
         toggleRuntimeOpsOverviewBtn.addEventListener('click', toggleRuntimeOpsOverview);
+    }
+
+    if (toggleControlCompactBtn) {
+        toggleControlCompactBtn.addEventListener('click', () => {
+            const enabled = !controlCenterCard?.classList.contains('is-compact');
+            setControlCenterCompact(enabled);
+        });
     }
 
     if (refreshTestInsights) {
@@ -4091,6 +4232,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Initial load and periodic refresh
+    initControlCenterCompactMode();
     fetchBots();
     loadBotPresets();
     fetchTrades();
