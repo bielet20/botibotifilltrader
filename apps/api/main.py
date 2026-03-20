@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta
 from statistics import mean, pstdev
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, status
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 import asyncio
 import os
 import uuid
@@ -12,9 +12,18 @@ import csv
 import io
 import urllib.request
 import urllib.parse
+import subprocess
+import gzip
+import hashlib
+import hmac
+import base64
+import struct
+import time
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import ccxt.async_support as ccxt
+from cryptography.fernet import Fernet
+from passlib.context import CryptContext
 
 from apps.engine.backtester import BacktestEngine
 from apps.engine.risk import RiskEngine
@@ -87,10 +96,439 @@ _daily_blockers_loop_running = False
 _daily_blockers_loop_task = None
 _market_regime_cache_ttl_sec = max(30, int(os.getenv("MARKET_REGIME_CACHE_TTL_SEC", "300")))
 _market_regime_cache: dict = {"updated_at": 0.0, "payload": None}
+_db_backup_loop_running = False
+_db_backup_loop_task = None
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_auth_failed_attempts: dict = {}
 
 
 def _project_root_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _auth_enabled() -> bool:
+    return str(os.getenv("APP_AUTH_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auth_username() -> str:
+    return str(os.getenv("APP_AUTH_USERNAME", "admin")).strip() or "admin"
+
+
+def _auth_password_hash() -> str:
+    return str(os.getenv("APP_AUTH_PASSWORD_HASH", "")).strip()
+
+
+def _auth_secret_key() -> str:
+    return str(os.getenv("APP_AUTH_SECRET_KEY", "")).strip()
+
+
+def _auth_cookie_name() -> str:
+    return str(os.getenv("APP_AUTH_COOKIE_NAME", "aaa_bot_session")).strip() or "aaa_bot_session"
+
+
+def _auth_cookie_secure() -> bool:
+    return str(os.getenv("APP_AUTH_COOKIE_SECURE", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auth_totp_enabled() -> bool:
+    return str(os.getenv("APP_AUTH_TOTP_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auth_totp_secret() -> str:
+    return str(os.getenv("APP_AUTH_TOTP_SECRET", "")).strip()
+
+
+def _auth_idle_minutes() -> int:
+    try:
+        return max(5, int(os.getenv("APP_AUTH_IDLE_TIMEOUT_MINUTES", "30")))
+    except Exception:
+        return 30
+
+
+def _auth_max_failed_attempts() -> int:
+    try:
+        return max(3, int(os.getenv("APP_AUTH_MAX_FAILED_ATTEMPTS", "5")))
+    except Exception:
+        return 5
+
+
+def _auth_lockout_minutes() -> int:
+    try:
+        return max(1, int(os.getenv("APP_AUTH_LOCKOUT_MINUTES", "15")))
+    except Exception:
+        return 15
+
+
+def _auth_session_minutes() -> int:
+    try:
+        return max(5, int(os.getenv("APP_AUTH_SESSION_MINUTES", "720")))
+    except Exception:
+        return 720
+
+
+def _auth_is_configured() -> bool:
+    if not _auth_enabled():
+        return False
+    if not (_auth_password_hash() and _auth_secret_key()):
+        return False
+    if _auth_totp_enabled() and not _auth_totp_secret():
+        return False
+    return True
+
+
+def _verify_auth_password(password: str, stored_hash: str) -> bool:
+    raw = str(stored_hash or "").strip()
+    if not raw:
+        return False
+
+    # Preferred format: pbkdf2_sha256$<iterations>$<salt_b64>$<digest_b64>
+    if raw.startswith("pbkdf2_sha256$"):
+        parts = raw.split("$")
+        if len(parts) != 4:
+            return False
+        _, iter_s, salt_b64, digest_b64 = parts
+        try:
+            iterations = max(100_000, int(iter_s))
+            salt = base64.urlsafe_b64decode(salt_b64.encode("utf-8"))
+            expected = base64.urlsafe_b64decode(digest_b64.encode("utf-8"))
+        except Exception:
+            return False
+        computed = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password or "").encode("utf-8"),
+            salt,
+            iterations,
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(computed, expected)
+
+    # Backward compatibility: passlib hash formats.
+    try:
+        return bool(_pwd_context.verify(password, raw))
+    except Exception:
+        return False
+
+
+def _totp_secret_valid(secret: str) -> bool:
+    if not secret:
+        return False
+    try:
+        padded = secret.upper() + ("=" * ((8 - (len(secret) % 8)) % 8))
+        base64.b32decode(padded.encode("utf-8"), casefold=True)
+        return True
+    except Exception:
+        return False
+
+
+def _totp_code(secret: str, for_ts: int, step_seconds: int = 30, digits: int = 6) -> str:
+    padded = secret.upper() + ("=" * ((8 - (len(secret) % 8)) % 8))
+    key = base64.b32decode(padded.encode("utf-8"), casefold=True)
+    counter = int(for_ts // step_seconds)
+    msg = struct.pack(">Q", counter)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code_int = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(code_int % (10 ** digits)).zfill(digits)
+
+
+def _verify_totp_code(code: str, secret: str, window_steps: int = 1) -> bool:
+    raw = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(raw) < 6:
+        return False
+    now = int(time.time())
+    for drift in range(-window_steps, window_steps + 1):
+        candidate = _totp_code(secret=secret, for_ts=now + (drift * 30))
+        if hmac.compare_digest(candidate, raw[-6:]):
+            return True
+    return False
+
+
+def _auth_attempt_key(request: Request, username: str) -> str:
+    ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "unknown")
+    ip_key = str(ip).split(",")[0].strip()
+    return f"{ip_key}|{str(username or '').strip().lower()}"
+
+
+def _auth_lockout_remaining_seconds(request: Request, username: str) -> int:
+    key = _auth_attempt_key(request, username)
+    data = _auth_failed_attempts.get(key) or {}
+    locked_until = float(data.get("locked_until") or 0.0)
+    now = _time.time()
+    if locked_until <= now:
+        return 0
+    return int(max(1, locked_until - now))
+
+
+def _register_auth_failure(request: Request, username: str) -> int:
+    key = _auth_attempt_key(request, username)
+    now = _time.time()
+    data = dict(_auth_failed_attempts.get(key) or {})
+    first_at = float(data.get("first_at") or now)
+    failed = int(data.get("failed") or 0)
+    # Reset rolling window after lockout window passes.
+    if now - first_at > (_auth_lockout_minutes() * 60):
+        failed = 0
+        first_at = now
+    failed += 1
+    locked_until = 0.0
+    if failed >= _auth_max_failed_attempts():
+        locked_until = now + (_auth_lockout_minutes() * 60)
+        failed = 0
+        first_at = now
+    _auth_failed_attempts[key] = {"first_at": first_at, "failed": failed, "locked_until": locked_until}
+    return int(max(0, locked_until - now))
+
+
+def _clear_auth_failures(request: Request, username: str) -> None:
+    key = _auth_attempt_key(request, username)
+    _auth_failed_attempts.pop(key, None)
+
+
+def _create_auth_session_token(username: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": username,
+        "iat": int(now.timestamp()),
+        "lseen": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=_auth_session_minutes())).timestamp()),
+    }
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    body_b64 = base64.urlsafe_b64encode(body).decode("utf-8").rstrip("=")
+    sig = hmac.new(_auth_secret_key().encode("utf-8"), body_b64.encode("utf-8"), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode("utf-8").rstrip("=")
+    return f"{body_b64}.{sig_b64}"
+
+
+def _decode_auth_session_token(token: str) -> dict | None:
+    if not token or not _auth_secret_key():
+        return None
+    try:
+        body_b64, sig_b64 = str(token).split(".", 1)
+        expected_sig = hmac.new(
+            _auth_secret_key().encode("utf-8"),
+            body_b64.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        received_sig = base64.urlsafe_b64decode(sig_b64 + ("=" * ((4 - len(sig_b64) % 4) % 4)))
+        if not hmac.compare_digest(expected_sig, received_sig):
+            return None
+        raw = base64.urlsafe_b64decode(body_b64 + ("=" * ((4 - len(body_b64) % 4) % 4)))
+        payload = json.loads(raw.decode("utf-8"))
+        exp = int(payload.get("exp") or 0)
+        if exp <= int(_time.time()):
+            return None
+        return dict(payload or {})
+    except Exception:
+        return None
+
+
+def _request_authenticated_user(request: Request) -> str:
+    token = request.cookies.get(_auth_cookie_name())
+    if not token:
+        raw_cookie = str(request.headers.get("cookie") or "")
+        target = f"{_auth_cookie_name()}="
+        for part in raw_cookie.split(";"):
+            piece = part.strip()
+            if piece.startswith(target):
+                token = piece[len(target):]
+                break
+    if token:
+        token = str(token).strip().strip('"').strip("'")
+    if not token:
+        return ""
+    payload = _decode_auth_session_token(token)
+    if not payload:
+        return ""
+    lseen = int(payload.get("lseen") or payload.get("iat") or 0)
+    if lseen > 0:
+        idle_timeout = _auth_idle_minutes() * 60
+        if (_time.time() - lseen) > idle_timeout:
+            return ""
+    user = str(payload.get("sub") or "").strip()
+    return user
+
+
+def _refresh_auth_session_cookie(response, username: str) -> None:
+    token = _create_auth_session_token(username)
+    response.set_cookie(
+        key=_auth_cookie_name(),
+        value=token,
+        max_age=_auth_session_minutes() * 60,
+        httponly=True,
+        secure=_auth_cookie_secure(),
+        samesite="strict",
+    )
+
+
+def _database_url_runtime() -> str:
+    url = str(os.getenv("DATABASE_URL", "")).strip()
+    return url or "sqlite:///./trading.db"
+
+
+def _database_kind(url: str) -> str:
+    u = str(url or "").strip().lower()
+    if u.startswith("sqlite"):
+        return "sqlite"
+    if u.startswith("postgresql") or u.startswith("postgres"):
+        return "postgresql"
+    return "unknown"
+
+
+def _sqlite_file_path(url: str) -> str:
+    # sqlite:///./trading.db | sqlite:////abs/path.db
+    raw = str(url or "")
+    if raw.startswith("sqlite:///"):
+        candidate = raw.replace("sqlite:///", "", 1)
+        if os.path.isabs(candidate):
+            return candidate
+        return os.path.abspath(os.path.join(_project_root_path(), candidate))
+    if raw.startswith("sqlite://"):
+        candidate = raw.replace("sqlite://", "", 1)
+        return os.path.abspath(candidate)
+    raise ValueError("invalid_sqlite_url")
+
+
+def _db_backup_dir() -> str:
+    raw = str(os.getenv("DB_BACKUP_DIR", "backups/db")).strip() or "backups/db"
+    if os.path.isabs(raw):
+        path = raw
+    else:
+        path = os.path.abspath(os.path.join(_project_root_path(), raw))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _db_backup_encryption_key() -> str:
+    return str(os.getenv("DB_BACKUP_ENCRYPTION_KEY", "")).strip()
+
+
+def _db_backup_enabled() -> bool:
+    return str(os.getenv("DB_BACKUP_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _db_backup_interval_sec() -> int:
+    try:
+        return max(300, int(os.getenv("DB_BACKUP_INTERVAL_SEC", "3600")))
+    except Exception:
+        return 3600
+
+
+def _db_backup_retention_days() -> int:
+    try:
+        return max(1, int(os.getenv("DB_BACKUP_RETENTION_DAYS", "14")))
+    except Exception:
+        return 14
+
+
+def _sanitize_db_url_for_logs(url: str) -> str:
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.netloc:
+            return url
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        user = parts.username or ""
+        netloc = f"{user}@{host}{port}" if user else f"{host}{port}"
+        return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return url
+
+
+def _run_db_backup_once() -> dict:
+    enc_key = _db_backup_encryption_key()
+    if not enc_key:
+        raise RuntimeError("DB_BACKUP_ENCRYPTION_KEY missing")
+
+    db_url = _database_url_runtime()
+    kind = _database_kind(db_url)
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%d_%H%M%S")
+    backup_dir = _db_backup_dir()
+    plain_payload: bytes = b""
+    source_ref = ""
+
+    if kind == "sqlite":
+        sqlite_path = _sqlite_file_path(db_url)
+        if not os.path.exists(sqlite_path):
+            raise RuntimeError(f"sqlite_database_not_found:{sqlite_path}")
+        source_ref = sqlite_path
+        with open(sqlite_path, "rb") as f:
+            plain_payload = f.read()
+    elif kind == "postgresql":
+        source_ref = _sanitize_db_url_for_logs(db_url)
+        proc = subprocess.run(
+            ["pg_dump", "--no-owner", "--no-privileges", db_url],
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if proc.returncode != 0:
+            stderr = (proc.stderr or b"").decode("utf-8", errors="ignore")
+            raise RuntimeError(f"pg_dump_failed:{stderr.strip()}")
+        plain_payload = bytes(proc.stdout or b"")
+    else:
+        raise RuntimeError(f"unsupported_database_kind:{kind}")
+
+    compressed = gzip.compress(plain_payload, compresslevel=9)
+    token = Fernet(enc_key.encode("utf-8")).encrypt(compressed)
+    file_name = f"db_backup_{kind}_{stamp}.bin.enc"
+    file_path = os.path.join(backup_dir, file_name)
+    with open(file_path, "wb") as f:
+        f.write(token)
+
+    meta = {
+        "created_at": now.isoformat(),
+        "database_kind": kind,
+        "source": source_ref,
+        "compressed_bytes": len(compressed),
+        "encrypted_bytes": len(token),
+        "path": file_path,
+    }
+    with open(f"{file_path}.meta.json", "w", encoding="utf-8") as mf:
+        json.dump(meta, mf, ensure_ascii=False, indent=2)
+
+    retention_days = _db_backup_retention_days()
+    cutoff = _time.time() - (retention_days * 86400)
+    for name in os.listdir(backup_dir):
+        if not name.startswith("db_backup_"):
+            continue
+        target = os.path.join(backup_dir, name)
+        try:
+            if os.path.isfile(target) and os.path.getmtime(target) < cutoff:
+                os.remove(target)
+        except Exception:
+            continue
+
+    return {
+        "ok": True,
+        "created_at": now.isoformat(),
+        "database_kind": kind,
+        "backup_path": file_path,
+        "source": source_ref,
+        "retention_days": retention_days,
+    }
+
+
+def _list_db_backups(limit: int = 30) -> list[dict]:
+    backup_dir = _db_backup_dir()
+    rows = []
+    for name in sorted(os.listdir(backup_dir), reverse=True):
+        if not name.endswith(".bin.enc"):
+            continue
+        full = os.path.join(backup_dir, name)
+        if not os.path.isfile(full):
+            continue
+        rows.append(
+            {
+                "file": name,
+                "path": full,
+                "bytes": os.path.getsize(full),
+                "modified_at": datetime.fromtimestamp(os.path.getmtime(full), tz=timezone.utc).isoformat(),
+            }
+        )
+        if len(rows) >= max(1, int(limit)):
+            break
+    return rows
 
 
 def _infer_alert_context(reason_code: str, title: str, message: str, data: dict) -> dict:
@@ -1481,12 +1919,35 @@ async def _activate_bot_for_production_internal(
     db.commit()
     return result
 
+
+async def _db_backup_loop():
+    global _db_backup_loop_running
+    interval = _db_backup_interval_sec()
+    while _db_backup_loop_running:
+        try:
+            info = _run_db_backup_once()
+            print(
+                "[DBBackup] ok "
+                f"kind={info.get('database_kind')} file={info.get('backup_path')} retention={info.get('retention_days')}d"
+            )
+        except Exception as e:
+            print(f"[DBBackup] error: {e}")
+        await asyncio.sleep(interval)
+
+
 @app.on_event("startup")
 async def startup_event():
     global _auto_production_loop_running, _auto_production_loop_task
     global _daily_blockers_loop_running, _daily_blockers_loop_task
-    load_dotenv(_env_file_path(), override=False)
+    global _db_backup_loop_running, _db_backup_loop_task
+    load_dotenv(_env_file_path(), override=True)
     init_db()
+    if _auth_enabled() and not _auth_is_configured():
+        raise RuntimeError("APP_AUTH_ENABLED=true requires APP_AUTH_PASSWORD_HASH + APP_AUTH_SECRET_KEY (+ APP_AUTH_TOTP_SECRET if TOTP enabled)")
+    if _auth_totp_enabled() and not _totp_secret_valid(_auth_totp_secret()):
+        raise RuntimeError("APP_AUTH_TOTP_SECRET must be a valid base32 secret")
+    if _db_backup_enabled() and not _db_backup_encryption_key():
+        raise RuntimeError("DB_BACKUP_ENABLED=true requires DB_BACKUP_ENCRYPTION_KEY")
     try:
         await asyncio.wait_for(bot_manager.resume_bots(), timeout=20)
     except Exception as e:
@@ -1525,11 +1986,20 @@ async def startup_event():
             f"(interval={_daily_blockers_interval_sec}s, min_trades={_daily_blockers_min_scored_trades})"
         )
 
+    if _db_backup_enabled() and (_db_backup_loop_task is None or _db_backup_loop_task.done()):
+        _db_backup_loop_running = True
+        _db_backup_loop_task = asyncio.create_task(_db_backup_loop())
+        print(
+            "[Startup] db backup loop enabled "
+            f"(interval={_db_backup_interval_sec()}s, retention={_db_backup_retention_days()}d, dir={_db_backup_dir()})"
+        )
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global _auto_production_loop_running, _auto_production_loop_task
     global _daily_blockers_loop_running, _daily_blockers_loop_task
+    global _db_backup_loop_running, _db_backup_loop_task
     _auto_production_loop_running = False
     if _auto_production_loop_task and not _auto_production_loop_task.done():
         _auto_production_loop_task.cancel()
@@ -1549,6 +2019,16 @@ async def shutdown_event():
             pass
         except Exception as e:
             print(f"[Shutdown] daily blockers loop stop warning: {e}")
+
+    _db_backup_loop_running = False
+    if _db_backup_loop_task and not _db_backup_loop_task.done():
+        _db_backup_loop_task.cancel()
+        try:
+            await _db_backup_loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Shutdown] db backup loop stop warning: {e}")
 
     await paper_monitor_runtime.stop(trigger="shutdown")
     await adaptive_orchestrator.stop()
@@ -3503,6 +3983,154 @@ async def adopt_bot(bot_id: str, symbol: str, strategy: str = "algo_expert"):
     if success:
         return {"message": f"Bot {bot_id} adopted position for {symbol}"}
     raise HTTPException(status_code=400, detail="Could not adopt position")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not _auth_enabled():
+        return await call_next(request)
+
+    path = request.url.path
+    is_api = path.startswith("/api/")
+    public_paths = {
+        "/health",
+        "/api/health",
+        "/api/auth/login",
+        "/api/auth/status",
+        "/login",
+        "/favicon.ico",
+    }
+    if path in public_paths or path.startswith("/static/"):
+        return await call_next(request)
+
+    user = _request_authenticated_user(request)
+    if user:
+        request.state.auth_user = user
+        # If user already authenticated, avoid leaving on login page.
+        if path == "/login":
+            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        response = await call_next(request)
+        # Sliding session: refresh last activity on each authenticated request.
+        _refresh_auth_session_cookie(response, user)
+        return response
+
+    if is_api:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "authentication_required"},
+        )
+
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/login", include_in_schema=False)
+async def read_login():
+    if not _auth_enabled():
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    if _auth_is_configured():
+        return FileResponse(os.path.join(static_dir, "login.html"))
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "auth_enabled_but_not_configured"},
+    )
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request, payload: dict = None):
+    payload = payload or {}
+    if not _auth_enabled():
+        return {"ok": True, "auth_enabled": False}
+    if not _auth_is_configured():
+        raise HTTPException(status_code=503, detail="auth_enabled_but_not_configured")
+
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    lock_remain = _auth_lockout_remaining_seconds(request=request, username=username)
+    if lock_remain > 0:
+        raise HTTPException(status_code=429, detail=f"too_many_attempts_try_in_{lock_remain}s")
+    if username != _auth_username():
+        _register_auth_failure(request=request, username=username)
+        raise HTTPException(status_code=401, detail="invalid_credentials")
+    ok_pwd = _verify_auth_password(password, _auth_password_hash())
+    if not ok_pwd:
+        _register_auth_failure(request=request, username=username)
+        raise HTTPException(status_code=401, detail="invalid_credentials")
+
+    if _auth_totp_enabled():
+        totp_code = str(payload.get("totp_code") or "").strip()
+        if not _verify_totp_code(totp_code, _auth_totp_secret()):
+            _register_auth_failure(request=request, username=username)
+            raise HTTPException(status_code=401, detail="invalid_totp_code")
+
+    _clear_auth_failures(request=request, username=username)
+
+    token = _create_auth_session_token(username)
+    response = JSONResponse(
+        content={
+            "ok": True,
+            "auth_enabled": True,
+            "username": username,
+            "requires_totp": _auth_totp_enabled(),
+            "idle_timeout_minutes": _auth_idle_minutes(),
+        }
+    )
+    _refresh_auth_session_cookie(response, username)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(key=_auth_cookie_name())
+    return response
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    user = _request_authenticated_user(request)
+    lock_remain = 0
+    if not user:
+        lock_remain = _auth_lockout_remaining_seconds(request=request, username=_auth_username())
+    return {
+        "auth_enabled": _auth_enabled(),
+        "authenticated": bool(user),
+        "username": user if user else None,
+        "requires_totp": bool(_auth_totp_enabled()),
+        "idle_timeout_minutes": _auth_idle_minutes(),
+        "max_failed_attempts": _auth_max_failed_attempts(),
+        "lockout_minutes": _auth_lockout_minutes(),
+        "lockout_remaining_sec": lock_remain,
+    }
+
+
+@app.get("/api/db-backups/status")
+async def db_backups_status():
+    return {
+        "enabled": _db_backup_enabled(),
+        "loop_running": bool(_db_backup_loop_running),
+        "interval_sec": _db_backup_interval_sec(),
+        "retention_days": _db_backup_retention_days(),
+        "backup_dir": _db_backup_dir(),
+        "database_kind": _database_kind(_database_url_runtime()),
+        "database_ref": _sanitize_db_url_for_logs(_database_url_runtime()),
+        "encrypted": bool(_db_backup_encryption_key()),
+    }
+
+
+@app.get("/api/db-backups/list")
+async def db_backups_list(limit: int = 30):
+    return {"items": _list_db_backups(limit=max(1, min(limit, 200)))}
+
+
+@app.post("/api/db-backups/run")
+async def db_backups_run():
+    if not _db_backup_encryption_key():
+        raise HTTPException(status_code=400, detail="DB_BACKUP_ENCRYPTION_KEY missing")
+    try:
+        return _run_db_backup_once()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup_failed: {e}")
+
 
 # Mount static files last
 static_dir = os.path.join(os.path.dirname(__file__), "static")

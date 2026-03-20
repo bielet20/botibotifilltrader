@@ -110,6 +110,43 @@ bash scripts/api_runtime.sh status
 bash scripts/api_runtime.sh logs
 ```
 
+## 🔐 Acceso con contraseña + backups automáticos cifrados
+
+1. Genera hash de contraseña:
+   ```bash
+   python scripts/generate_app_auth_hash.py
+   ```
+2. En `.env` activa seguridad de acceso:
+   - `APP_AUTH_ENABLED=true`
+   - `APP_AUTH_USERNAME=admin` (o el usuario que quieras)
+   - `APP_AUTH_PASSWORD_HASH=<hash generado>`
+   - `APP_AUTH_SECRET_KEY=<clave larga aleatoria>`
+   - `APP_AUTH_COOKIE_SECURE=true` (si usas HTTPS)
+   - `APP_AUTH_IDLE_TIMEOUT_MINUTES=30` (cierre por inactividad)
+   - `APP_AUTH_MAX_FAILED_ATTEMPTS=5`
+   - `APP_AUTH_LOCKOUT_MINUTES=15`
+   - (opcional 2FA) `APP_AUTH_TOTP_ENABLED=true` + `APP_AUTH_TOTP_SECRET=<base32>`
+3. Activa backups automáticos cifrados:
+   - `DB_BACKUP_ENABLED=true`
+   - `DB_BACKUP_ENCRYPTION_KEY=<clave Fernet>`
+   - `DB_BACKUP_INTERVAL_SEC=3600`
+   - `DB_BACKUP_RETENTION_DAYS=14`
+4. Reinicia API:
+   ```bash
+   bash scripts/api_runtime.sh restart
+   ```
+
+Endpoints útiles:
+- `GET /api/auth/status`
+- `POST /api/db-backups/run`
+- `GET /api/db-backups/list`
+- `GET /api/db-backups/status`
+
+Restaurar backup:
+```bash
+python scripts/restore_db_backup.py --file backups/db/<archivo>.bin.enc
+```
+
 ## 🐳 Docker desarrollo (stack completo)
 
 Levanta **Postgres (Timescale)**, **Redis**, **API** y **worker** con un solo comando.
