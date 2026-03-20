@@ -1,4 +1,43 @@
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_now}
+      POSTGRES_DB: ${POSTGRES_DB:-trading_db}
+    volumes:
+      - antigravity_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading_user} -d ${POSTGRES_DB:-trading_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - antigravity_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     build:
       context: .
@@ -10,7 +49,8 @@ services:
       - .env
     environment:
       PYDANTIC_DISABLE_PLUGINS: "__all__"
-      DATABASE_URL: sqlite:////app/data/trading_runtime.db
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trading_user:change_me_now@db/trading_db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       PORT: "8000"
       WEB_CONCURRENCY: "2"
     security_opt:
@@ -20,6 +60,12 @@ services:
     volumes:
       - antigravity_data:/app/data
       - antigravity_reports:/app/reports
+      - antigravity_backups:/app/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     tmpfs:
       - /tmp
     ulimits:
@@ -51,13 +97,20 @@ services:
       - .env
     environment:
       PYDANTIC_DISABLE_PLUGINS: "__all__"
-      DATABASE_URL: sqlite:////app/data/trading_runtime.db
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trading_user:change_me_now@db/trading_db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     security_opt:
       - no-new-privileges:true
     command: ["python", "-m", "apps.bot_manager.manager"]
     volumes:
       - antigravity_data:/app/data
       - antigravity_reports:/app/reports
+      - antigravity_backups:/app/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     tmpfs:
       - /tmp
     logging:
@@ -67,5 +120,8 @@ services:
         max-file: "3"
 
 volumes:
+  antigravity_pgdata:
+  antigravity_redis:
   antigravity_data:
   antigravity_reports:
+  antigravity_backups:

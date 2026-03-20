@@ -17,7 +17,8 @@ def main():
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, dklen=32)
     salt_b64 = base64.urlsafe_b64encode(salt).decode("utf-8")
     digest_b64 = base64.urlsafe_b64encode(digest).decode("utf-8")
-    hashed = f"pbkdf2_sha256${iterations}${salt_b64}${digest_b64}"
+    # Use ":" delimiter to avoid docker-compose interpolation issues with "$".
+    hashed = f"pbkdf2_sha256:{iterations}:{salt_b64}:{digest_b64}"
     print("\nGuarda esto en .env:")
     print(f"APP_AUTH_PASSWORD_HASH={hashed}")
 

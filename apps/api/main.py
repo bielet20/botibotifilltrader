@@ -181,9 +181,12 @@ def _verify_auth_password(password: str, stored_hash: str) -> bool:
     if not raw:
         return False
 
-    # Preferred format: pbkdf2_sha256$<iterations>$<salt_b64>$<digest_b64>
-    if raw.startswith("pbkdf2_sha256$"):
-        parts = raw.split("$")
+    # Preferred formats:
+    # - pbkdf2_sha256:<iterations>:<salt_b64>:<digest_b64> (docker-friendly)
+    # - pbkdf2_sha256$<iterations>$<salt_b64>$<digest_b64> (legacy)
+    if raw.startswith("pbkdf2_sha256:") or raw.startswith("pbkdf2_sha256$"):
+        delim = ":" if raw.startswith("pbkdf2_sha256:") else "$"
+        parts = raw.split(delim)
         if len(parts) != 4:
             return False
         _, iter_s, salt_b64, digest_b64 = parts

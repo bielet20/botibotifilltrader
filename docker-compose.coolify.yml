@@ -1,0 +1,47 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYDANTIC_DISABLE_PLUGINS: "__all__"
+      PORT: "8000"
+      WEB_CONCURRENCY: "2"
+      # For Coolify, prefer managed Postgres/Redis URLs in env vars.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/trading_runtime.db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "8000"
+    volumes:
+      - antigravity_data:/app/data
+      - antigravity_reports:/app/reports
+      - antigravity_backups:/app/backups
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  antigravity_data:
+  antigravity_reports:
+  antigravity_backups:

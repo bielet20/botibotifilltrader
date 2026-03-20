@@ -209,6 +209,64 @@ curl http://127.0.0.1:8000/api/health
 docker compose -f docker-compose.prod.yml down
 ```
 
+Variables mínimas recomendadas en `.env` para server:
+
+```bash
+# Seguridad de acceso (obligatorio recomendado)
+APP_AUTH_ENABLED=true
+APP_AUTH_USERNAME=admin
+APP_AUTH_PASSWORD_HASH=<hash>
+APP_AUTH_SECRET_KEY=<clave larga aleatoria>
+APP_AUTH_COOKIE_SECURE=true
+APP_AUTH_TOTP_ENABLED=true
+APP_AUTH_TOTP_SECRET=<base32>
+
+# Backups automáticos cifrados
+DB_BACKUP_ENABLED=true
+DB_BACKUP_ENCRYPTION_KEY=<fernet_key>
+DB_BACKUP_INTERVAL_SEC=3600
+DB_BACKUP_RETENTION_DAYS=14
+DB_BACKUP_DIR=/app/backups/db
+
+# Stack DB/Cache prod
+POSTGRES_USER=trading_user
+POSTGRES_PASSWORD=<password-fuerte>
+POSTGRES_DB=trading_db
+DATABASE_URL=postgresql://trading_user:<password-fuerte>@db/trading_db
+REDIS_URL=redis://redis:6379/0
+```
+
+Notas operativas para server:
+- El stack `prod` levanta `db` (PostgreSQL), `redis`, `api` y opcional `worker`.
+- Los backups cifrados quedan persistidos en volumen Docker (`/app/backups`).
+- La imagen `prod` ya incluye `pg_dump/psql` para backup/restore de PostgreSQL.
+- `Dockerfile.prod` usa `requirements.prod.txt` (sin `llama-cpp-python`) para evitar fallos de build en entornos tipo Coolify.
+
+## ☁️ Deploy en Coolify
+
+Si en Coolify tienes problemas con el `docker-compose.prod.yml`, usa el archivo dedicado:
+- `docker-compose.coolify.yml` (solo `api`, pensado para usar Postgres/Redis gestionados por Coolify).
+
+Checklist rápido en Coolify:
+1. Build/Compose file: `docker-compose.coolify.yml`
+2. Puerto interno app: `8000`
+3. Healthcheck path: `/api/health`
+4. Variables mínimas:
+   - `DATABASE_URL`
+   - `REDIS_URL`
+   - `APP_AUTH_*` (incluyendo hash en formato `pbkdf2_sha256:...`)
+   - `DB_BACKUP_*`
+5. Volúmenes persistentes montados por el compose en:
+   - `/app/data`
+   - `/app/reports`
+   - `/app/backups`
+
+Archivo base recomendado de variables:
+- `.env.coolify.example`
+
+Nota importante:
+- Evita hashes con `$` en `APP_AUTH_PASSWORD_HASH` para no romper interpolación de Docker Compose en Coolify.
+
 Reinicio limpio (si hay estado raro):
 
 ```bash
