@@ -73,7 +73,15 @@ class BotInstance:
             fast = config.get("fast_ema", 9)
             slow = config.get("slow_ema", 21)
             amount = float(config.get("trade_amount", config.get("amount", 0.002)) or 0.002)
-            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow, trade_amount=amount)
+            min_spread = float(config.get("ema_min_spread_pct", 0.0004) or 0.0004)
+            min_slope = float(config.get("ema_min_slope_pct", 0.00015) or 0.00015)
+            self.strategy = EMACrossStrategy(
+                fast_ema=fast,
+                slow_ema=slow,
+                trade_amount=amount,
+                min_spread_pct=min_spread,
+                min_slope_pct=min_slope,
+            )
 
         # Executor Factory — 'hyperliquid' for live trading, else paper
         executor_type = config.get("executor", "paper").lower()
@@ -135,6 +143,79 @@ class BotInstance:
             "profit_pct": float(profit_pct),
             "unrealized_pnl": float(unrealized_pnl),
         }
+
+    def _is_live_mainnet_executor(self) -> bool:
+        executor = str(self.config.get("executor") or "paper").strip().lower()
+        is_testnet = _to_bool(self.config.get("hyperliquid_testnet"), default=False)
+        return executor == "hyperliquid" and (not is_testnet)
+
+    def _live_execution_guard(self, signal, symbol: str, last_price: float) -> tuple[bool, str]:
+        """
+        Evita churn en live:
+        - no cerrar en zona gris (ni suficiente profit neto ni pérdida relevante)
+        - no reentrar demasiado rápido o sin desplazamiento real de precio
+        """
+        if not self._is_live_mainnet_executor():
+            return True, ""
+        if not bool(self.config.get("live_execution_guard_enabled", True)):
+            return True, ""
+        if signal.side == TradeSide.HOLD:
+            return True, ""
+
+        state = self._load_learning_state(symbol)
+        now_ts = float(time.time())
+        min_trade_interval_sec = float(self.config.get("live_min_trade_interval_sec", 45.0) or 45.0)
+        min_reentry_move_pct = float(self.config.get("live_min_reentry_move_pct", 0.001) or 0.001)
+        min_close_profit_pct = float(self.config.get("live_min_close_profit_pct", 0.0012) or 0.0012)
+        force_close_loss_pct = float(self.config.get("live_force_close_loss_pct", 0.0035) or 0.0035)
+        taker_fee_pct = float(self.config.get("live_taker_fee_pct", os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00045")) or 0.00045)
+        min_profit_from_costs = max((2.0 * taker_fee_pct) + 0.00035, min_close_profit_pct)
+
+        last_exec_at = float(state.get("last_exec_at", 0.0) or 0.0)
+        last_exec_price = float(state.get("last_exec_price", 0.0) or 0.0)
+
+        snapshot = self._position_snapshot(symbol, last_price)
+        if snapshot:
+            side = str(snapshot.get("side") or "").lower()
+            closing_signal = (
+                (side == "long" and signal.side == TradeSide.SELL)
+                or (side == "short" and signal.side == TradeSide.BUY)
+            )
+            if closing_signal:
+                profit_pct = float(snapshot.get("profit_pct", 0.0) or 0.0)
+                in_gray_zone = (-force_close_loss_pct < profit_pct < min_profit_from_costs)
+                if in_gray_zone:
+                    return False, (
+                        f"close_guard_gray_zone profit_pct={round(profit_pct, 6)} "
+                        f"(min_close={round(min_profit_from_costs, 6)}, force_loss={round(force_close_loss_pct, 6)})"
+                    )
+                return True, ""
+
+        if last_exec_at > 0 and (now_ts - last_exec_at) < min_trade_interval_sec:
+            return False, f"cooldown_guard {(now_ts - last_exec_at):.1f}s < {min_trade_interval_sec:.1f}s"
+
+        if last_price > 0 and last_exec_price > 0:
+            moved_pct = abs(last_price - last_exec_price) / max(last_exec_price, 1e-12)
+            if moved_pct < min_reentry_move_pct:
+                return False, f"reentry_guard move_pct={round(moved_pct, 6)} < {round(min_reentry_move_pct, 6)}"
+
+        return True, ""
+
+    def _position_execution_guard(self, signal, symbol: str, last_price: float, allow_short: bool) -> tuple[bool, str]:
+        if signal.side == TradeSide.HOLD:
+            return True, ""
+        if signal.side != TradeSide.SELL:
+            return True, ""
+
+        snapshot = self._position_snapshot(symbol, last_price)
+        if snapshot:
+            side = str(snapshot.get("side") or "").lower()
+            if side in {"long", "short"}:
+                return True, ""
+
+        if allow_short:
+            return True, ""
+        return False, "blocked_naked_short"
 
     def _is_ai_take_profit_scope_allowed(self) -> bool:
         # By default, AI TP only runs for bots that are live-mainnet and production-ready.
@@ -234,6 +315,38 @@ class BotInstance:
         self.config.setdefault("min_allocation", max(10.0, round(base_alloc * 0.4, 2)))
         self.config.setdefault("max_allocation", max(round(base_alloc * 6.0, 2), 200.0))
         self.config.setdefault("experience_boost", True)
+        self.config.setdefault(
+            "live_execution_guard_enabled",
+            _to_bool(os.getenv("LIVE_EXECUTION_GUARD_ENABLED"), default=True),
+        )
+        self.config.setdefault(
+            "live_min_trade_interval_sec",
+            float(os.getenv("LIVE_MIN_TRADE_INTERVAL_SEC", "45") or 45),
+        )
+        self.config.setdefault(
+            "live_min_reentry_move_pct",
+            float(os.getenv("LIVE_MIN_REENTRY_MOVE_PCT", "0.001") or 0.001),
+        )
+        self.config.setdefault(
+            "live_min_close_profit_pct",
+            float(os.getenv("LIVE_MIN_CLOSE_PROFIT_PCT", "0.0012") or 0.0012),
+        )
+        self.config.setdefault(
+            "live_force_close_loss_pct",
+            float(os.getenv("LIVE_FORCE_CLOSE_LOSS_PCT", "0.0035") or 0.0035),
+        )
+        self.config.setdefault(
+            "live_taker_fee_pct",
+            float(os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00045") or 0.00045),
+        )
+        self.config.setdefault(
+            "ema_min_spread_pct",
+            float(os.getenv("EMA_MIN_SPREAD_PCT", "0.0004") or 0.0004),
+        )
+        self.config.setdefault(
+            "ema_min_slope_pct",
+            float(os.getenv("EMA_MIN_SLOPE_PCT", "0.00015") or 0.00015),
+        )
 
     def _load_learning_state(self, symbol: str):
         with SessionLocal() as db:
@@ -441,7 +554,15 @@ class BotInstance:
             fast = self.config.get("fast_ema", 9)
             slow = self.config.get("slow_ema", 21)
             amount = float(self.config.get("trade_amount", self.config.get("amount", 0.002)) or 0.002)
-            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow, trade_amount=amount)
+            min_spread = float(self.config.get("ema_min_spread_pct", 0.0004) or 0.0004)
+            min_slope = float(self.config.get("ema_min_slope_pct", 0.00015) or 0.00015)
+            self.strategy = EMACrossStrategy(
+                fast_ema=fast,
+                slow_ema=slow,
+                trade_amount=amount,
+                min_spread_pct=min_spread,
+                min_slope_pct=min_slope,
+            )
         
         print(f"[BotInstance] Bot {self.bot_id} reconfigured with new parameters.")
 
@@ -874,6 +995,21 @@ class BotInstance:
                 risk_result = await self.risk_engine.validate(signal)
                 
                 if risk_result.approved and signal.side != TradeSide.HOLD:
+                    pos_ok, pos_reason = self._position_execution_guard(
+                        signal,
+                        symbol,
+                        float(last_price or 0.0),
+                        bool(self.config.get("allow_short", False)),
+                    )
+                    if not pos_ok:
+                        print(f"[{self.bot_id}] Signal blocked by position guard: {pos_reason}")
+                        await asyncio.sleep(loop_sleep_sec)
+                        continue
+                    guard_ok, guard_reason = self._live_execution_guard(signal, symbol, float(last_price or 0.0))
+                    if not guard_ok:
+                        print(f"[{self.bot_id}] Live execution skipped by guard: {guard_reason}")
+                        await asyncio.sleep(loop_sleep_sec)
+                        continue
                     await self._execute_and_persist_signal(
                         signal,
                         strategy_name,
