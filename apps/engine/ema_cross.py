@@ -3,9 +3,10 @@ from apps.shared.models import TradeSignal, TradeSide
 import asyncio
 
 class EMACrossStrategy(BaseStrategy):
-    def __init__(self, fast_ema: int = 9, slow_ema: int = 21):
+    def __init__(self, fast_ema: int = 9, slow_ema: int = 21, trade_amount: float = 0.002):
         self.fast_ema = fast_ema
         self.slow_ema = slow_ema
+        self.trade_amount = max(0.0001, float(trade_amount or 0.002))
 
     async def analyze(self, market_data: dict) -> TradeSignal:
         # Placeholder for real EMA calculation logic using market_data (OHLCV)
@@ -28,7 +29,7 @@ class EMACrossStrategy(BaseStrategy):
         return TradeSignal(
             symbol=symbol,
             side=side,
-            amount=0.01,
+            amount=self.trade_amount,
             price=price,
             strategy_id="EMA_Cross_v1",
             meta={"fast": self.fast_ema, "slow": self.slow_ema}

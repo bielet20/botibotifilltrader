@@ -1,11 +1,11 @@
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 
 from apps.shared.database import SessionLocal
-from apps.shared.models import BotDB, TradeDB, BotAlertDB
+from apps.shared.models import BotDB, TradeDB, BotAlertDB, OrderLogDB, PositionDB
 
 
 class ProductionGuardService:
@@ -13,10 +13,15 @@ class ProductionGuardService:
         self.bot_manager = bot_manager
         self.interval_sec = int(os.getenv("PRODUCTION_GUARD_INTERVAL_SEC", "60"))
         self.enabled = os.getenv("PRODUCTION_GUARD_ENABLED", "true").lower() == "true"
+        self.kill_switch_enabled = os.getenv("PRODUCTION_KILL_SWITCH_ENABLED", "true").lower() == "true"
+        self.daily_loss_cap_abs = abs(float(os.getenv("PRODUCTION_KILL_DAILY_LOSS_ABS", "25")))
+        self.failed_orders_threshold = max(1, int(os.getenv("PRODUCTION_KILL_FAILED_ORDERS_THRESHOLD", "5")))
+        self.failed_orders_window_min = max(1, int(os.getenv("PRODUCTION_KILL_FAILED_ORDERS_WINDOW_MIN", "20")))
         self._task = None
         self._running = False
         self._last_status: List[Dict[str, Any]] = []
         self._last_emitted_key: Dict[str, str] = {}
+        self._last_global_guard_key: str = ""
 
     async def start(self):
         if not self.enabled or self._running:
@@ -137,10 +142,120 @@ class ProductionGuardService:
         }
         self._append_event_file(event)
 
+    def _emit_global_alert(self, db, level: str, title: str, message: str, reason_code: str, data: Dict[str, Any]):
+        key = f"GLOBAL|{reason_code}|{round(float(data.get('daily_net_pnl', 0.0) or 0.0), 2)}|{int(data.get('failed_orders_recent', 0) or 0)}"
+        if self._last_global_guard_key == key:
+            return
+        self._last_global_guard_key = key
+
+        alert = BotAlertDB(
+            bot_id="SYSTEM",
+            level=level,
+            title=title,
+            message=message,
+            reason_code=reason_code,
+            data=data,
+            acknowledged=False,
+        )
+        db.add(alert)
+        self._append_event_file(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "bot_id": "SYSTEM",
+                "level": level,
+                "title": title,
+                "message": message,
+                "reason_code": reason_code,
+                "data": data,
+            }
+        )
+
+    def _apply_global_kill_switch(self, db, trigger: str) -> Dict[str, Any]:
+        if not self.kill_switch_enabled:
+            return {"checked": False, "triggered": False}
+
+        live_bots = [b for b in db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).all() if self._is_live_mainnet(b)]
+        live_ids = [b.id for b in live_bots]
+        if not live_ids:
+            return {"checked": True, "triggered": False, "live_bots": 0}
+
+        now = datetime.now(timezone.utc)
+        day_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).replace(tzinfo=None)
+        window_start = (now - timedelta(minutes=self.failed_orders_window_min)).replace(tzinfo=None)
+
+        day_trades = (
+            db.query(TradeDB)
+            .filter(TradeDB.bot_id.in_(live_ids), TradeDB.time >= day_start)
+            .all()
+        )
+        daily_net_pnl = round(sum((float(t.pnl or 0.0) - float(t.fee or 0.0)) for t in day_trades), 6)
+
+        failed_recent = (
+            db.query(OrderLogDB)
+            .filter(
+                OrderLogDB.bot_id.in_(live_ids),
+                OrderLogDB.created_at >= window_start,
+                OrderLogDB.status.in_(["failed", "cancelled"]),
+            )
+            .count()
+        )
+
+        should_stop_loss = daily_net_pnl <= -self.daily_loss_cap_abs
+        should_stop_failures = failed_recent >= self.failed_orders_threshold
+        triggered = should_stop_loss or should_stop_failures
+        if not triggered:
+            return {
+                "checked": True,
+                "triggered": False,
+                "live_bots": len(live_ids),
+                "daily_net_pnl": daily_net_pnl,
+                "failed_orders_recent": int(failed_recent),
+            }
+
+        stopped = []
+        for bot in live_bots:
+            if self.bot_manager.stop_bot(bot.id):
+                bot.status = "stopped"
+                stopped.append(bot.id)
+
+        reason = "global_daily_loss_cap" if should_stop_loss else "global_failed_orders_spike"
+        message = (
+            f"Kill switch activado: PnL diario {daily_net_pnl} <= -{self.daily_loss_cap_abs}"
+            if should_stop_loss
+            else f"Kill switch activado: {failed_recent} órdenes fallidas/canceladas en {self.failed_orders_window_min}m"
+        )
+        self._emit_global_alert(
+            db,
+            level="critical",
+            title="Kill Switch Global Activado",
+            message=message,
+            reason_code=reason,
+            data={
+                "trigger": trigger,
+                "live_bots_before": len(live_ids),
+                "stopped_bots": stopped,
+                "daily_net_pnl": daily_net_pnl,
+                "daily_loss_cap_abs": self.daily_loss_cap_abs,
+                "failed_orders_recent": int(failed_recent),
+                "failed_orders_threshold": self.failed_orders_threshold,
+                "failed_orders_window_min": self.failed_orders_window_min,
+            },
+        )
+        return {
+            "checked": True,
+            "triggered": True,
+            "reason": reason,
+            "message": message,
+            "stopped_bots": stopped,
+            "daily_net_pnl": daily_net_pnl,
+            "failed_orders_recent": int(failed_recent),
+        }
+
     async def scan_once(self, trigger: str = "manual"):
         status_rows: List[Dict[str, Any]] = []
 
         with SessionLocal() as db:
+            global_guard = self._apply_global_kill_switch(db, trigger=trigger)
             running_bots = db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).all()
 
             for bot in running_bots:
@@ -229,6 +344,21 @@ class ProductionGuardService:
                     "trigger": trigger,
                     "scanned_at": datetime.now(timezone.utc).isoformat(),
                 }
+                open_positions = (
+                    db.query(PositionDB)
+                    .filter(PositionDB.bot_id == bot.id, PositionDB.is_open == True)
+                    .count()
+                )
+                row["open_positions"] = int(open_positions)
+                if decision == "stop" and open_positions > 0:
+                    decision = "warn"
+                    reason_code = f"{reason_code}_open_position_protected"
+                    reason_msg = (
+                        f"{reason_msg}. Stop automático diferido: bot mantiene {open_positions} posición(es) abierta(s)."
+                    )
+                    row["decision"] = decision
+                    row["reason_code"] = reason_code
+                    row["reason"] = reason_msg
                 status_rows.append(row)
 
                 if decision == "warn":
@@ -270,6 +400,7 @@ class ProductionGuardService:
             "trigger": trigger,
             "count": len(status_rows),
             "items": status_rows,
+            "global_guard": global_guard,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 

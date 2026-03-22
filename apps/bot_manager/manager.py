@@ -72,7 +72,8 @@ class BotInstance:
             from apps.engine.ema_cross import EMACrossStrategy
             fast = config.get("fast_ema", 9)
             slow = config.get("slow_ema", 21)
-            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow)
+            amount = float(config.get("trade_amount", config.get("amount", 0.002)) or 0.002)
+            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow, trade_amount=amount)
 
         # Executor Factory — 'hyperliquid' for live trading, else paper
         executor_type = config.get("executor", "paper").lower()
@@ -439,7 +440,8 @@ class BotInstance:
         else:
             fast = self.config.get("fast_ema", 9)
             slow = self.config.get("slow_ema", 21)
-            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow)
+            amount = float(self.config.get("trade_amount", self.config.get("amount", 0.002)) or 0.002)
+            self.strategy = EMACrossStrategy(fast_ema=fast, slow_ema=slow, trade_amount=amount)
         
         print(f"[BotInstance] Bot {self.bot_id} reconfigured with new parameters.")
 
@@ -833,6 +835,9 @@ class BotInstance:
 
             while self.status == BotStatus.RUNNING:
                 symbol = self.config.get("symbol", "BTC/USDT")
+                executor_type = str(self.config.get("executor", "paper") or "paper").lower()
+                default_loop_sleep = 20.0 if executor_type == "hyperliquid" else 10.0
+                loop_sleep_sec = max(5.0, float(self.config.get("loop_interval_sec", default_loop_sleep) or default_loop_sleep))
                 # 1. Fetch data
                 ticker = await self.mde.fetch_ticker(symbol)
                 last_price = ticker.get('last', 0.0)
@@ -869,7 +874,6 @@ class BotInstance:
                 risk_result = await self.risk_engine.validate(signal)
                 
                 if risk_result.approved and signal.side != TradeSide.HOLD:
-                    executor_type = self.config.get("executor", "paper")
                     await self._execute_and_persist_signal(
                         signal,
                         strategy_name,
@@ -881,7 +885,7 @@ class BotInstance:
                 else:
                     print(f"[{self.bot_id}] Holding position...")
                     
-                await asyncio.sleep(10)
+                await asyncio.sleep(loop_sleep_sec)
         except Exception as e:
             print(f"Bot {self.bot_id} failed: {e}")
         finally:

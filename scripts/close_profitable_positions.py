@@ -2,10 +2,18 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
 import ccxt.async_support as ccxt
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from apps.shared.hyperliquid_credentials import get_hyperliquid_wallet_and_key
 
 
 BALANCED_TRAILING_LADDER = [(0.02, 0.0075), (0.05, 0.006), (0.10, 0.0045)]
@@ -300,9 +308,9 @@ def _compute_dynamic_exit_thresholds(
     trailing_retrace_factor = 1.05 - (0.45 * vol_norm)  # 1.05 -> 0.60
 
     effective_stop_loss_pct = max(0.0025, float(stop_loss_pct or 0.0) * stop_loss_factor)
-    effective_hard_take_profit_pct = max(0.0035, float(hard_take_profit_pct or 0.0) * take_profit_factor)
-    effective_trailing_trigger_pct = max(0.003, float(trailing_trigger_pct or 0.0) * trailing_trigger_factor)
-    effective_trailing_retrace_pct = max(0.0015, float(trailing_retrace_pct or 0.0) * trailing_retrace_factor)
+    effective_hard_take_profit_pct = max(0.0015, float(hard_take_profit_pct or 0.0) * take_profit_factor)
+    effective_trailing_trigger_pct = max(0.0012, float(trailing_trigger_pct or 0.0) * trailing_trigger_factor)
+    effective_trailing_retrace_pct = max(0.0008, float(trailing_retrace_pct or 0.0) * trailing_retrace_factor)
 
     # Breakeven lock arms once the position had enough positive excursion.
     breakeven_arm_gain_pct = max(
@@ -342,8 +350,10 @@ async def run(
     volatility_low_threshold_pct: float,
     volatility_high_threshold_pct: float,
 ) -> dict:
-    wallet = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "").strip()
-    key = os.getenv("HYPERLIQUID_SIGNING_KEY", "").strip()
+    load_dotenv(override=True)
+    wallet_raw, key_raw = get_hyperliquid_wallet_and_key()
+    wallet = str(wallet_raw or "").strip()
+    key = str(key_raw or "").strip()
     use_testnet = os.getenv("HYPERLIQUID_USE_TESTNET", "true").lower() == "true"
     # Approximate taker fee rate per side. Override in .env if needed.
     fee_rate = _to_float(os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00035"), 0.00035)
@@ -505,8 +515,8 @@ async def run(
 
             dynamic_thresholds = _compute_dynamic_exit_thresholds(
                 symbol_volatility_pct=symbol_volatility_pct,
-                vol_low_threshold_pct=vol_low_threshold_pct,
-                vol_high_threshold_pct=vol_high_threshold_pct,
+                vol_low_threshold_pct=volatility_low_threshold_pct,
+                vol_high_threshold_pct=volatility_high_threshold_pct,
                 stop_loss_pct=stop_loss_pct,
                 hard_take_profit_pct=hard_take_profit_pct,
                 trailing_trigger_pct=trailing_trigger_pct,

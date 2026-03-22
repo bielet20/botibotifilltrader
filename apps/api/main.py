@@ -98,6 +98,14 @@ _market_regime_cache_ttl_sec = max(30, int(os.getenv("MARKET_REGIME_CACHE_TTL_SE
 _market_regime_cache: dict = {"updated_at": 0.0, "payload": None}
 _db_backup_loop_running = False
 _db_backup_loop_task = None
+_autonomy_watchdog_enabled = os.getenv("AUTONOMY_WATCHDOG_ENABLED", "true").lower() == "true"
+_autonomy_watchdog_interval_sec = max(20, int(os.getenv("AUTONOMY_WATCHDOG_INTERVAL_SEC", "60")))
+_autonomy_watchdog_sync_positions = os.getenv("AUTONOMY_WATCHDOG_SYNC_POSITIONS", "true").lower() == "true"
+_autonomy_watchdog_reassign_positions = os.getenv("AUTONOMY_WATCHDOG_REASSIGN_POSITIONS", "true").lower() == "true"
+_autonomy_watchdog_loop_running = False
+_autonomy_watchdog_loop_task = None
+_autonomy_watchdog_last_report: dict = {}
+_autonomy_watchdog_last_unresolved_signature = ""
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _auth_failed_attempts: dict = {}
 
@@ -1541,6 +1549,9 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
             market_regime_context=market_regime_context,
         )
         candidate_core = bool(readiness.get("gate_ok"))
+        allow_flag_override = str(os.getenv("PRODUCTION_ALLOW_FLAG_OVERRIDE", "false")).strip().lower() in {"1", "true", "yes", "on"}
+        if allow_flag_override and _analysis_gate_ok(dict(bot.config or {})):
+            candidate_core = True
 
         results.append(
             {
@@ -1651,6 +1662,11 @@ async def _sync_positions_with_best_executor() -> dict:
     env = _read_env_values()
     wallet = env.get("HYPERLIQUID_WALLET_ADDRESS", "")
     signing_key = env.get("HYPERLIQUID_SIGNING_KEY", "")
+    if not (HyperliquidExecutor._is_valid_wallet(wallet) and HyperliquidExecutor._is_valid_private_key(signing_key)):
+        wallet_db, signing_key_db = get_hyperliquid_wallet_and_key()
+        if wallet_db and signing_key_db:
+            wallet = wallet_db
+            signing_key = signing_key_db
     use_testnet = str(env.get("HYPERLIQUID_USE_TESTNET", "True")).strip().lower() == "true"
 
     wallet_ok = HyperliquidExecutor._is_valid_wallet(wallet)
@@ -1938,12 +1954,177 @@ async def _db_backup_loop():
         await asyncio.sleep(interval)
 
 
+def _emit_system_alert(
+    db: Session,
+    *,
+    level: str,
+    title: str,
+    message: str,
+    reason_code: str,
+    data: dict | None = None,
+) -> None:
+    alert = BotAlertDB(
+        bot_id="SYSTEM",
+        level=level,
+        title=title,
+        message=message,
+        reason_code=reason_code,
+        data=data or {},
+        acknowledged=False,
+    )
+    db.add(alert)
+
+
+def _symbol_key(value: str) -> str:
+    return str(value or "").strip().upper()
+
+
+async def _autonomy_watchdog_once(trigger: str = "manual") -> dict:
+    global _autonomy_watchdog_last_unresolved_signature
+
+    sync_result = None
+    if _autonomy_watchdog_sync_positions:
+        try:
+            sync_result = await _sync_positions_with_best_executor()
+        except Exception as e:
+            sync_result = {"error": str(e)}
+            print(f"[AutonomyWatchdog] position sync error: {e}")
+
+    restarted_bots: list[str] = []
+    reassigned_positions: list[dict] = []
+    unresolved_positions: list[dict] = []
+
+    with SessionLocal() as db:
+        all_non_archived_bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
+        running_db_bots = (
+            [b for b in all_non_archived_bots if str(b.status or "").lower() == BotStatus.RUNNING]
+        )
+
+        for db_bot in running_db_bots:
+            if db_bot.id in bot_manager.active_bots:
+                continue
+            if bot_manager.start_bot(db_bot.id, dict(db_bot.config or {})):
+                restarted_bots.append(db_bot.id)
+
+        symbol_to_running_bots: dict[str, list[BotDB]] = {}
+        for b in running_db_bots:
+            sym = _symbol_key((b.config or {}).get("symbol"))
+            if not sym:
+                continue
+            symbol_to_running_bots.setdefault(sym, []).append(b)
+
+        if _autonomy_watchdog_reassign_positions:
+            open_positions = db.query(PositionDB).filter(PositionDB.is_open == True).all()
+            for pos in open_positions:
+                symbol = _symbol_key(pos.symbol)
+                assigned_ok = pos.bot_id != "ORPHAN" and any(b.id == pos.bot_id for b in running_db_bots)
+                if assigned_ok:
+                    continue
+
+                candidate = None
+                running_candidates = symbol_to_running_bots.get(symbol) or []
+                if running_candidates:
+                    candidate = running_candidates[0]
+                else:
+                    symbol_candidates = [
+                        b
+                        for b in all_non_archived_bots
+                        if _symbol_key((b.config or {}).get("symbol")) == symbol
+                    ]
+                    symbol_candidates.sort(key=lambda b: (str(b.status or "").lower() == BotStatus.RUNNING, b.created_at or datetime.min), reverse=True)
+                    candidate = symbol_candidates[0] if symbol_candidates else None
+                    if candidate and str(candidate.status or "").lower() != BotStatus.RUNNING:
+                        candidate.status = BotStatus.RUNNING
+                        if bot_manager.start_bot(candidate.id, dict(candidate.config or {})):
+                            restarted_bots.append(candidate.id)
+                        running_db_bots.append(candidate)
+                        symbol_to_running_bots.setdefault(symbol, []).append(candidate)
+
+                if candidate:
+                    old_bot_id = pos.bot_id
+                    pos.bot_id = candidate.id
+                    pos.updated_at = datetime.utcnow()
+                    meta = dict(pos.meta or {})
+                    meta["watchdog_reassigned_from"] = old_bot_id
+                    meta["watchdog_reassigned_at"] = datetime.utcnow().isoformat()
+                    pos.meta = meta
+                    reassigned_positions.append(
+                        {
+                            "position_id": pos.id,
+                            "symbol": pos.symbol,
+                            "from_bot_id": old_bot_id,
+                            "to_bot_id": candidate.id,
+                        }
+                    )
+                else:
+                    unresolved_positions.append(
+                        {
+                            "position_id": pos.id,
+                            "symbol": pos.symbol,
+                            "bot_id": pos.bot_id,
+                        }
+                    )
+
+        if restarted_bots:
+            _emit_system_alert(
+                db,
+                level="warning",
+                title="Watchdog: bots recuperados",
+                message=f"Se reiniciaron {len(restarted_bots)} bot(s) marcados como running.",
+                reason_code="watchdog_restarted_bots",
+                data={"restarted_bots": restarted_bots, "trigger": trigger},
+            )
+
+        unresolved_signature = "|".join(sorted(f"{p['position_id']}:{p['symbol']}" for p in unresolved_positions))
+        if unresolved_positions and unresolved_signature != _autonomy_watchdog_last_unresolved_signature:
+            _autonomy_watchdog_last_unresolved_signature = unresolved_signature
+            _emit_system_alert(
+                db,
+                level="critical",
+                title="Watchdog: posiciones sin bot gestor",
+                message="Hay posiciones abiertas sin bot controlador activo.",
+                reason_code="watchdog_unresolved_positions",
+                data={"positions": unresolved_positions, "trigger": trigger},
+            )
+        elif not unresolved_positions:
+            _autonomy_watchdog_last_unresolved_signature = ""
+
+        db.commit()
+
+    return {
+        "trigger": trigger,
+        "synced": bool(sync_result),
+        "sync_result": sync_result,
+        "restarted_bots": restarted_bots,
+        "reassigned_positions": reassigned_positions,
+        "unresolved_positions": unresolved_positions,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _autonomy_watchdog_loop():
+    global _autonomy_watchdog_loop_running, _autonomy_watchdog_last_report
+    while _autonomy_watchdog_loop_running:
+        try:
+            _autonomy_watchdog_last_report = await _autonomy_watchdog_once(trigger="scheduled")
+        except Exception as e:
+            _autonomy_watchdog_last_report = {
+                "trigger": "scheduled",
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            print(f"[AutonomyWatchdog] loop error: {e}")
+        await asyncio.sleep(_autonomy_watchdog_interval_sec)
+
+
 @app.on_event("startup")
 async def startup_event():
     global _auto_production_loop_running, _auto_production_loop_task
     global _daily_blockers_loop_running, _daily_blockers_loop_task
     global _db_backup_loop_running, _db_backup_loop_task
+    global _autonomy_watchdog_loop_running, _autonomy_watchdog_loop_task
     load_dotenv(_env_file_path(), override=True)
+    adaptive_orchestrator.refresh_from_env()
     init_db()
     if _auth_enabled() and not _auth_is_configured():
         raise RuntimeError("APP_AUTH_ENABLED=true requires APP_AUTH_PASSWORD_HASH + APP_AUTH_SECRET_KEY (+ APP_AUTH_TOTP_SECRET if TOTP enabled)")
@@ -1997,12 +2178,21 @@ async def startup_event():
             f"(interval={_db_backup_interval_sec()}s, retention={_db_backup_retention_days()}d, dir={_db_backup_dir()})"
         )
 
+    if _autonomy_watchdog_enabled and (_autonomy_watchdog_loop_task is None or _autonomy_watchdog_loop_task.done()):
+        _autonomy_watchdog_loop_running = True
+        _autonomy_watchdog_loop_task = asyncio.create_task(_autonomy_watchdog_loop())
+        print(
+            "[Startup] autonomy watchdog loop enabled "
+            f"(interval={_autonomy_watchdog_interval_sec}s, sync_positions={_autonomy_watchdog_sync_positions})"
+        )
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global _auto_production_loop_running, _auto_production_loop_task
     global _daily_blockers_loop_running, _daily_blockers_loop_task
     global _db_backup_loop_running, _db_backup_loop_task
+    global _autonomy_watchdog_loop_running, _autonomy_watchdog_loop_task
     _auto_production_loop_running = False
     if _auto_production_loop_task and not _auto_production_loop_task.done():
         _auto_production_loop_task.cancel()
@@ -2032,6 +2222,16 @@ async def shutdown_event():
             pass
         except Exception as e:
             print(f"[Shutdown] db backup loop stop warning: {e}")
+
+    _autonomy_watchdog_loop_running = False
+    if _autonomy_watchdog_loop_task and not _autonomy_watchdog_loop_task.done():
+        _autonomy_watchdog_loop_task.cancel()
+        try:
+            await _autonomy_watchdog_loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Shutdown] autonomy watchdog loop stop warning: {e}")
 
     await paper_monitor_runtime.stop(trigger="shutdown")
     await adaptive_orchestrator.stop()
@@ -2072,6 +2272,26 @@ async def health_check(db: Session = Depends(get_db)):
         "running_bots": running_bots,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+@app.get("/api/autonomy/watchdog/status")
+async def get_autonomy_watchdog_status():
+    return {
+        "enabled": bool(_autonomy_watchdog_enabled),
+        "running": bool(_autonomy_watchdog_loop_running),
+        "interval_sec": int(_autonomy_watchdog_interval_sec),
+        "sync_positions": bool(_autonomy_watchdog_sync_positions),
+        "reassign_positions": bool(_autonomy_watchdog_reassign_positions),
+        "last_report": _autonomy_watchdog_last_report,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/autonomy/watchdog/run-once")
+async def run_autonomy_watchdog_once():
+    global _autonomy_watchdog_last_report
+    _autonomy_watchdog_last_report = await _autonomy_watchdog_once(trigger="manual")
+    return _autonomy_watchdog_last_report
 
 
 @app.get("/api/take-profit/status")
