@@ -177,6 +177,24 @@ class BotInstance:
         snapshot = self._position_snapshot(symbol, last_price)
         if snapshot:
             side = str(snapshot.get("side") or "").lower()
+            signal_is_same_direction = (
+                (side == "long" and signal.side == TradeSide.BUY)
+                or (side == "short" and signal.side == TradeSide.SELL)
+            )
+            if signal_is_same_direction:
+                allow_scale_in = bool(self.config.get("live_allow_scale_in", False))
+                if not allow_scale_in:
+                    return False, "scale_in_blocked_same_direction"
+                min_scale_in_move_pct = float(self.config.get("live_scale_in_min_move_pct", 0.0022) or 0.0022)
+                entry_price = float(snapshot.get("entry_price", 0.0) or 0.0)
+                if entry_price > 0:
+                    moved_from_entry = abs(last_price - entry_price) / max(entry_price, 1e-12)
+                    if moved_from_entry < min_scale_in_move_pct:
+                        return False, (
+                            f"scale_in_guard move_from_entry={round(moved_from_entry, 6)} "
+                            f"< {round(min_scale_in_move_pct, 6)}"
+                        )
+
             closing_signal = (
                 (side == "long" and signal.side == TradeSide.SELL)
                 or (side == "short" and signal.side == TradeSide.BUY)

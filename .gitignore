@@ -24,6 +24,12 @@ env/
 # macOS
 .DS_Store
 
+# Local DB backups (encrypted dumps)
+backups/
+
+# TOTP QR exports (sensitive)
+apps/api/static/totp_admin_qr.png
+
 # Logs and reports artifacts
 *.log
 reports/*.csv

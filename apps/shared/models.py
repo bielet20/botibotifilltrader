@@ -158,3 +158,24 @@ class EncryptedCredentialDB(Base):
     id = Column(String(64), primary_key=True)
     ciphertext = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutopilotDecisionLogDB(Base):
+    """
+    Journal persistente de decisiones del Copiloto.
+    Guarda qué cambió, por qué y con qué contexto para auditoría y mejora continua.
+    """
+    __tablename__ = "autopilot_decision_log"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    trigger = Column(String(80), nullable=False, default="scheduled")
+    bot_id = Column(String(100), nullable=False, index=True)
+    symbol = Column(String(30), nullable=True, index=True)
+    profile = Column(String(30), nullable=False, default="balanced")
+    reason_code = Column(String(100), nullable=False, default="config_update")
+    reason_text = Column(String(800), nullable=False, default="")
+    market_context = Column(JSON, default={})
+    metrics = Column(JSON, default={})
+    changes = Column(JSON, default={})
+    extra = Column(JSON, default={})

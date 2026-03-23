@@ -82,6 +82,10 @@
                     <h1 id="sectionTitle">Inteligencia de Mercado</h1>
                     <p id="sectionSubtitle">Monitorización institutional de activos y rendimiento algorítmico en tiempo
                         real.</p>
+                    <div id="copilotTotalHeaderBadge"
+                        style="margin-top:8px; display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #f59e0b; border-radius:999px; color:#f59e0b; font-size:0.74rem; font-weight:700; letter-spacing:0.02em; background: rgba(245, 158, 11, 0.10);">
+                        COPILOTO TOTAL OFF
+                    </div>
                 </div>
 
                 <div class="dashboard-container">
@@ -131,6 +135,8 @@
                                             style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid #facc15; color: #facc15;">MODO COMPACTO OFF</button>
                                         <button id="toggleRuntimeOpsOverviewBtn" class="glass"
                                             style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-emerald); color: var(--accent-emerald);">MODO PRODUCCIÓN ON</button>
+                                        <button id="toggleCopilotTotalBtn" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid #f59e0b; color: #f59e0b;">COPILOTO TOTAL OFF</button>
                                         <button id="refreshIntelligenceTop" class="glass"
                                             style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">ACTUALIZAR</button>
                                     </div>
@@ -139,6 +145,14 @@
                                     <div id="runtimeOpsOverviewStatus"
                                         style="margin-bottom:10px; font-size:0.78rem; color: var(--text-secondary); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.02);">
                                         Operación automática: cargando estado...
+                                    </div>
+                                    <div id="copilotProbeStatus"
+                                        style="margin-bottom:10px; font-size:0.76rem; color: var(--text-secondary); border:1px solid rgba(245,158,11,0.35); border-radius:10px; padding:8px 10px; background: rgba(245,158,11,0.08);">
+                                        Copiloto Probe: cargando estado de flat/probe...
+                                    </div>
+                                    <div id="copilotDecisionHistory"
+                                        style="margin-bottom:10px; font-size:0.74rem; color: var(--text-secondary); border:1px solid rgba(56,189,248,0.35); border-radius:10px; padding:8px 10px; background: rgba(56,189,248,0.08); max-height:170px; overflow:auto;">
+                                        Historial Copiloto: cargando decisiones...
                                     </div>
                                     <div id="intelligenceTopHelp"
                                         style="margin-bottom:10px; font-size:0.74rem; color: var(--text-muted); border:1px dashed rgba(255,255,255,0.18); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.01);">
@@ -1076,7 +1090,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=6.8"></script>
+    <script src="/static/app.js?v=6.9"></script>
     <script>
         lucide.createIcons();
     </script>

@@ -48,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sections = document.querySelectorAll('.tab-content');
     const sectionTitle = document.getElementById('sectionTitle');
     const sectionSubtitle = document.getElementById('sectionSubtitle');
+    const copilotTotalHeaderBadge = document.getElementById('copilotTotalHeaderBadge');
     const sidebar = document.querySelector('.sidebar');
     const menuToggle = document.getElementById('menuToggle');
     const sidebarOverlay = document.getElementById('sidebarOverlay');
@@ -108,8 +109,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const botTrafficLightSummary = document.getElementById('botTrafficLightSummary');
     const botTrafficLightList = document.getElementById('botTrafficLightList');
     const toggleRuntimeOpsOverviewBtn = document.getElementById('toggleRuntimeOpsOverviewBtn');
+    const toggleCopilotTotalBtn = document.getElementById('toggleCopilotTotalBtn');
     const controlCenterCard = document.querySelector('.control-center-card');
     const runtimeOpsOverviewStatus = document.getElementById('runtimeOpsOverviewStatus');
+    const copilotProbeStatus = document.getElementById('copilotProbeStatus');
+    const copilotDecisionHistory = document.getElementById('copilotDecisionHistory');
     const settingsWalletAddressInput = document.getElementById('settingsWalletAddress');
     const settingsSigningKeyInput = document.getElementById('settingsSigningKey');
     const settingsUseTestnetSelect = document.getElementById('settingsUseTestnet');
@@ -144,6 +148,83 @@ document.addEventListener('DOMContentLoaded', () => {
     const HIGH_STRATEGIC_THRESHOLD_PCT = 90;
     /** Si ya existe signing key en servidor (.env o BD cifrada), se puede guardar sin reescribirla. */
     let hlSigningKeyPresent = false;
+    let copilotTotalState = { enabled: false, profile: 'balanced', reason: 'idle', last_updated: null };
+
+    function renderCopilotTotalHeaderBadge() {
+        if (!copilotTotalHeaderBadge) return;
+        const enabled = !!copilotTotalState.enabled;
+        const profile = String(copilotTotalState.profile || 'balanced').toUpperCase();
+        const color = enabled ? 'var(--accent-emerald)' : '#f59e0b';
+        copilotTotalHeaderBadge.textContent = enabled
+            ? `COPILOTO TOTAL ACTIVO · PERFIL ${profile}`
+            : 'COPILOTO TOTAL OFF';
+        copilotTotalHeaderBadge.style.borderColor = color;
+        copilotTotalHeaderBadge.style.color = color;
+        copilotTotalHeaderBadge.style.background = enabled
+            ? 'rgba(16, 185, 129, 0.10)'
+            : 'rgba(245, 158, 11, 0.10)';
+    }
+
+    function renderCopilotProbeStatusFromBots(bots) {
+        if (!copilotProbeStatus) return;
+        const list = Array.isArray(bots) ? bots : [];
+        const target = list.find((b) => String(b?.id || '') === 'MKT-AUTO-BULL-EMA')
+            || list.find((b) => String(b?.config?.autopilot_mode || '').toLowerCase() === 'copilot_total');
+
+        if (!target) {
+            copilotProbeStatus.innerHTML = '<strong>Copiloto Probe:</strong> sin bot objetivo detectado.';
+            return;
+        }
+
+        const cfg = target.config || {};
+        const nowSec = Math.floor(Date.now() / 1000);
+        const flatSinceTs = Number(cfg.autopilot_flat_since_ts || 0);
+        const probeUntilTs = Number(cfg.autopilot_probe_until_ts || 0);
+        const probeActive = !!cfg.autopilot_probe_active;
+        const probeReason = String(cfg.autopilot_probe_reason || '-');
+        const waitSec = Number(cfg.autopilot_micro_entry_flat_wait_sec || 0);
+        const probeRemaining = probeUntilTs > nowSec ? Math.max(0, Math.floor(probeUntilTs - nowSec)) : 0;
+        const flatElapsed = flatSinceTs > 0 ? Math.max(0, Math.floor(nowSec - flatSinceTs)) : 0;
+        const flatRemaining = (waitSec > 0 && flatElapsed < waitSec) ? Math.floor(waitSec - flatElapsed) : 0;
+        const probeColor = probeActive ? 'var(--accent-emerald)' : '#f59e0b';
+
+        const fmt = (s) => {
+            const sec = Math.max(0, Number(s || 0));
+            const m = Math.floor(sec / 60);
+            const r = sec % 60;
+            return `${m}m ${r}s`;
+        };
+
+        copilotProbeStatus.innerHTML = [
+            `<div><strong>Flat timer:</strong> ${fmt(flatElapsed)} · target ${fmt(waitSec)} · restante ${fmt(flatRemaining)}</div>`,
+            `<div style="margin-top:4px;"><strong>Micro-probe:</strong> <span style="color:${probeColor}; font-weight:700;">${probeActive ? 'ON' : 'OFF'}</span> · motivo ${probeReason}</div>`,
+            `<div style="margin-top:4px;"><strong>Probe restante:</strong> ${fmt(probeRemaining)} · perfil ${String(cfg.autopilot_profile || '-').toUpperCase()} · bot ${target.id}</div>`,
+        ].join('');
+    }
+
+    function renderCopilotDecisionHistory(items) {
+        if (!copilotDecisionHistory) return;
+        const list = Array.isArray(items) ? items : [];
+        if (!list.length) {
+            copilotDecisionHistory.innerHTML = '<strong>Historial Copiloto:</strong> sin decisiones recientes.';
+            return;
+        }
+
+        const rows = list.slice(0, 8).map((item) => {
+            const when = item?.created_at ? new Date(item.created_at).toLocaleTimeString() : '--:--:--';
+            const bot = item?.bot_id || '-';
+            const profile = String(item?.profile || '-').toUpperCase();
+            const reasonCode = item?.reason_code || '-';
+            const reasonText = item?.reason_text || '-';
+            const changes = item?.changes && typeof item.changes === 'object' ? Object.keys(item.changes).length : 0;
+            return `<div style="margin-bottom:6px; padding-bottom:6px; border-bottom:1px dashed rgba(255,255,255,0.14);">
+                <div><strong>${when}</strong> · <span style="color:var(--accent-blue);">${bot}</span> · perfil <strong>${profile}</strong></div>
+                <div style="margin-top:2px;">${reasonCode} · cambios ${changes}</div>
+                <div style="margin-top:2px; color: var(--text-muted);">${reasonText}</div>
+            </div>`;
+        }).join('');
+        copilotDecisionHistory.innerHTML = `<strong>Historial Copiloto:</strong><div style="margin-top:6px;">${rows}</div>`;
+    }
 
     function renderSettingsCryptoInfo(crypto) {
         if (!settingsCryptoInfo) return;
@@ -603,18 +684,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderRuntimeOpsStatus(paperStatus, orchestratorStatus) {
+    function renderRuntimeOpsStatus(paperStatus, orchestratorStatus, copilotStatus = null) {
         const paperRunning = !!paperStatus?.running;
         const orchestratorRunning = !!orchestratorStatus?.running;
         const opsRunning = paperRunning && orchestratorRunning;
         const paperColor = paperRunning ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
         const orchColor = orchestratorRunning ? 'var(--accent-emerald)' : 'var(--accent-ruby)';
         const agg = paperStatus?.aggregate || {};
+        const cp = copilotStatus || copilotTotalState || {};
+        const copilotEnabled = !!cp.enabled;
+        const copilotProfile = String(cp.profile || 'balanced').toUpperCase();
+        const copilotColor = copilotEnabled ? 'var(--accent-emerald)' : '#f59e0b';
 
         if (runtimeOpsStatus) {
             runtimeOpsStatus.innerHTML = [
                 `<div><strong>Monitor paper:</strong> <span style="color:${paperColor}; font-weight:700;">${paperRunning ? 'ACTIVO' : 'PARADO'}</span> · intervalo ${paperStatus?.interval_sec ?? '-'}s · prefijo ${paperStatus?.prefix || '-'}</div>`,
                 `<div style="margin-top:4px;"><strong>Orquestador:</strong> <span style="color:${orchColor}; font-weight:700;">${orchestratorRunning ? 'ACTIVO' : 'PARADO'}</span> · intervalo ${orchestratorStatus?.interval_sec ?? '-'}s</div>`,
+                `<div style="margin-top:4px;"><strong>Copiloto Total:</strong> <span style="color:${copilotColor}; font-weight:700;">${copilotEnabled ? 'ON' : 'OFF'}</span> · perfil ${copilotProfile}</div>`,
                 `<div style="margin-top:4px; color: var(--text-muted);">Trades: ${agg?.trades ?? '-'} · WinRate: ${agg?.win_rate ?? '-'} · Net: ${agg?.net ?? '-'}</div>`
             ].join('');
         }
@@ -624,6 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <strong>Operación automática:</strong>
                 <span style="color:${opsRunning ? 'var(--accent-emerald)' : 'var(--accent-ruby)'}; font-weight:700;">${opsRunning ? 'ACTIVA' : 'PARADA'}</span>
                 · Monitor: ${paperRunning ? 'ON' : 'OFF'} · Orquestador: ${orchestratorRunning ? 'ON' : 'OFF'}
+                · Copiloto Total: <span style="color:${copilotColor}; font-weight:700;">${copilotEnabled ? 'ON' : 'OFF'}</span> (${copilotProfile})
                 <span style="color: var(--text-muted);"> · Trades ${agg?.trades ?? '-'} · Net ${agg?.net ?? '-'}</span>
             `;
         }
@@ -633,15 +720,27 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleRuntimeOpsOverviewBtn.style.borderColor = opsRunning ? 'var(--accent-ruby)' : 'var(--accent-emerald)';
             toggleRuntimeOpsOverviewBtn.style.color = opsRunning ? 'var(--accent-ruby)' : 'var(--accent-emerald)';
         }
+
+        if (toggleCopilotTotalBtn) {
+            toggleCopilotTotalBtn.textContent = copilotEnabled
+                ? `COPILOTO TOTAL ON (${copilotProfile})`
+                : 'COPILOTO TOTAL OFF';
+            toggleCopilotTotalBtn.style.borderColor = copilotEnabled ? 'var(--accent-emerald)' : '#f59e0b';
+            toggleCopilotTotalBtn.style.color = copilotEnabled ? 'var(--accent-emerald)' : '#f59e0b';
+        }
+        renderCopilotTotalHeaderBadge();
     }
 
     async function loadRuntimeOpsStatus() {
         if (!runtimeOpsStatus) return;
         runtimeOpsStatus.textContent = 'Estado: consultando operación automática...';
         try {
-            const [paperRes, orchRes] = await Promise.all([
+            const [paperRes, orchRes, copilotRes, botsRes, decisionsRes] = await Promise.all([
                 fetch('/api/paper-monitor/status'),
-                fetch('/api/autotrader/orchestrator/status')
+                fetch('/api/autotrader/orchestrator/status'),
+                fetch('/api/copilot/total/status'),
+                fetch('/api/bots'),
+                fetch('/api/copilot/decisions?limit=12&since_hours=72')
             ]);
 
             if (!paperRes.ok) {
@@ -652,13 +751,101 @@ document.addEventListener('DOMContentLoaded', () => {
                 const err = await orchRes.json();
                 throw new Error(err.detail || 'No se pudo obtener estado del orquestador');
             }
+            if (!copilotRes.ok) {
+                const err = await copilotRes.json();
+                throw new Error(err.detail || 'No se pudo obtener estado de Copiloto Total');
+            }
+            if (!botsRes.ok) {
+                const err = await botsRes.json();
+                throw new Error(err.detail || 'No se pudo obtener estado de bots');
+            }
+            if (!decisionsRes.ok) {
+                const err = await decisionsRes.json();
+                throw new Error(err.detail || 'No se pudo obtener historial del Copiloto');
+            }
 
             const paperStatus = await paperRes.json();
             const orchestratorStatus = await orchRes.json();
-            renderRuntimeOpsStatus(paperStatus, orchestratorStatus);
+            const copilotStatus = await copilotRes.json();
+            const bots = await botsRes.json();
+            const decisionsPayload = await decisionsRes.json();
+            copilotTotalState = { ...copilotTotalState, ...(copilotStatus || {}) };
+            renderRuntimeOpsStatus(paperStatus, orchestratorStatus, copilotStatus);
+            renderCopilotProbeStatusFromBots(bots);
+            renderCopilotDecisionHistory(decisionsPayload?.items || []);
         } catch (error) {
             console.error('Error loading runtime ops status:', error);
             runtimeOpsStatus.textContent = 'Error consultando estado: ' + error.message;
+            if (copilotProbeStatus) {
+                copilotProbeStatus.textContent = 'Error consultando flat/probe: ' + error.message;
+            }
+            if (copilotDecisionHistory) {
+                copilotDecisionHistory.textContent = 'Error consultando historial Copiloto: ' + error.message;
+            }
+        }
+    }
+
+    async function loadCopilotTotalStatus() {
+        try {
+            const res = await fetch('/api/copilot/total/status', { cache: 'no-store' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'No se pudo consultar Copiloto Total');
+            }
+            const payload = await res.json();
+            copilotTotalState = { ...copilotTotalState, ...(payload || {}) };
+            if (toggleCopilotTotalBtn) {
+                const enabled = !!copilotTotalState.enabled;
+                const profile = String(copilotTotalState.profile || 'balanced').toUpperCase();
+                toggleCopilotTotalBtn.textContent = enabled ? `COPILOTO TOTAL ON (${profile})` : 'COPILOTO TOTAL OFF';
+                toggleCopilotTotalBtn.style.borderColor = enabled ? 'var(--accent-emerald)' : '#f59e0b';
+                toggleCopilotTotalBtn.style.color = enabled ? 'var(--accent-emerald)' : '#f59e0b';
+            }
+            renderCopilotTotalHeaderBadge();
+        } catch (error) {
+            console.error('Error loading Copiloto Total status:', error);
+        }
+    }
+
+    async function toggleCopilotTotalMode() {
+        if (!toggleCopilotTotalBtn) return;
+        const nextState = !copilotTotalState.enabled;
+        if (nextState) {
+            const confirmEnable = window.confirm(
+                'Copiloto Total quedará autorizado para ajustar agresividad y optimizar entradas/salidas automáticamente.\n\n¿Activarlo ahora?'
+            );
+            if (!confirmEnable) return;
+        }
+
+        const prevText = toggleCopilotTotalBtn.textContent;
+        toggleCopilotTotalBtn.disabled = true;
+        toggleCopilotTotalBtn.textContent = nextState ? 'ACTIVANDO...' : 'DESACTIVANDO...';
+        try {
+            const res = await fetch('/api/copilot/total/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled: nextState,
+                    requested_by: 'dashboard_ui',
+                    reason: nextState ? 'user_enabled_copilot_total' : 'user_disabled_copilot_total',
+                }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'No se pudo cambiar Copiloto Total');
+            }
+            const payload = await res.json();
+            copilotTotalState = { ...copilotTotalState, ...(payload?.copilot_total || {}) };
+            await loadRuntimeOpsStatus();
+            alert(nextState
+                ? 'Copiloto Total ACTIVADO. El sistema ajustará agresividad automáticamente según régimen de mercado.'
+                : 'Copiloto Total DESACTIVADO. Se mantiene operación normal.');
+        } catch (error) {
+            console.error('Error toggling Copiloto Total:', error);
+            alert('No se pudo cambiar Copiloto Total: ' + error.message);
+            toggleCopilotTotalBtn.textContent = prevText;
+        } finally {
+            toggleCopilotTotalBtn.disabled = false;
         }
     }
 
@@ -3561,6 +3748,10 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleRuntimeOpsOverviewBtn.addEventListener('click', toggleRuntimeOpsOverview);
     }
 
+    if (toggleCopilotTotalBtn) {
+        toggleCopilotTotalBtn.addEventListener('click', toggleCopilotTotalMode);
+    }
+
     if (toggleControlCompactBtn) {
         toggleControlCompactBtn.addEventListener('click', () => {
             const enabled = !controlCenterCard?.classList.contains('is-compact');
@@ -4241,11 +4432,13 @@ document.addEventListener('DOMContentLoaded', () => {
     loadMainnetVisualControl();
     loadHyperliquidSettings();
     loadRuntimeOpsStatus();
+    loadCopilotTotalStatus();
     loadTakeProfitAdaptiveStatus();
     setInterval(fetchBots, 5000);
     setInterval(fetchTrades, 10000);
     setInterval(fetchStats, 10000);
     setInterval(fetchTestInsights, 20000);
     setInterval(loadMainnetVisualControl, 15000);
+    setInterval(loadRuntimeOpsStatus, 15000);
     setInterval(loadTakeProfitAdaptiveStatus, 20000);
 });
