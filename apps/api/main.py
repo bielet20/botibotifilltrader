@@ -2151,7 +2151,8 @@ async def startup_event():
     global _daily_blockers_loop_running, _daily_blockers_loop_task
     global _db_backup_loop_running, _db_backup_loop_task
     global _autonomy_watchdog_loop_running, _autonomy_watchdog_loop_task
-    load_dotenv(_env_file_path(), override=True)
+    # override=False: variables ya definidas en el entorno (Docker/shell) tienen prioridad sobre .env
+    load_dotenv(_env_file_path(), override=False)
     adaptive_orchestrator.refresh_from_env()
     init_db()
     if _auth_enabled() and not _auth_is_configured():
