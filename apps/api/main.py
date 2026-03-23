@@ -34,7 +34,16 @@ from apps.ai_engine.adaptive_orchestrator import AdaptiveOrchestratorService
 from apps.reporting_engine.production_guard import ProductionGuardService
 from apps.reporting_engine.paper_monitor_runtime import PaperMonitorRuntimeService
 from apps.shared.database import init_db, get_db, SessionLocal
-from apps.shared.models import BotDB, TradeDB, BotStatus, OrderLogDB, PositionDB, BotAlertDB, BotLearningStateDB
+from apps.shared.models import (
+    AutopilotDecisionLogDB,
+    BotAlertDB,
+    BotDB,
+    BotLearningStateDB,
+    BotStatus,
+    OrderLogDB,
+    PositionDB,
+    TradeDB,
+)
 from apps.shared.hyperliquid_credentials import (
     get_hyperliquid_wallet_and_key,
     fernet_configured,
@@ -80,9 +89,9 @@ adaptive_orchestrator = AdaptiveOrchestratorService(bot_manager, production_guar
 paper_monitor_runtime = PaperMonitorRuntimeService()
 
 _auto_production_promotion_enabled = os.getenv("PRODUCTION_AUTO_PROMOTE_ENABLED", "true").lower() == "true"
-_auto_production_promotion_interval_sec = max(30, int(os.getenv("PRODUCTION_AUTO_PROMOTE_INTERVAL_SEC", "180")))
+_auto_production_promotion_interval_sec = max(30, int(os.getenv("PRODUCTION_AUTO_PROMOTE_INTERVAL_SEC", "120")))
 _auto_production_lookback_hours = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_LOOKBACK_HOURS", "24")))
-_auto_production_min_scored_trades = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_MIN_SCORED_TRADES", "12")))
+_auto_production_min_scored_trades = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_MIN_SCORED_TRADES", "8")))
 _auto_production_top_n = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_TOP_N", "2")))
 _auto_production_max_last_trade_age_hours = max(0.5, float(os.getenv("PRODUCTION_AUTO_PROMOTE_MAX_LAST_TRADE_AGE_HOURS", "6")))
 _auto_production_loop_running = False
@@ -102,10 +111,14 @@ _autonomy_watchdog_enabled = os.getenv("AUTONOMY_WATCHDOG_ENABLED", "true").lowe
 _autonomy_watchdog_interval_sec = max(20, int(os.getenv("AUTONOMY_WATCHDOG_INTERVAL_SEC", "60")))
 _autonomy_watchdog_sync_positions = os.getenv("AUTONOMY_WATCHDOG_SYNC_POSITIONS", "true").lower() == "true"
 _autonomy_watchdog_reassign_positions = os.getenv("AUTONOMY_WATCHDOG_REASSIGN_POSITIONS", "true").lower() == "true"
+_autonomy_watchdog_run_on_startup = os.getenv("AUTONOMY_WATCHDOG_RUN_ON_STARTUP", "true").lower() == "true"
 _autonomy_watchdog_loop_running = False
 _autonomy_watchdog_loop_task = None
 _autonomy_watchdog_last_report: dict = {}
 _autonomy_watchdog_last_unresolved_signature = ""
+_position_sync_min_interval_sec = max(5, int(os.getenv("POSITION_SYNC_MIN_INTERVAL_SEC", "25")))
+_position_sync_last_run_ts = 0.0
+_position_sync_last_result: dict = {}
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _auth_failed_attempts: dict = {}
 
@@ -1487,7 +1500,11 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
     trades = db.query(TradeDB).filter(TradeDB.time >= since).order_by(TradeDB.time.asc()).all()
     open_critical_alerts = (
         db.query(BotAlertDB)
-        .filter(BotAlertDB.acknowledged == False, BotAlertDB.level == "critical")
+        .filter(
+            BotAlertDB.acknowledged == False,
+            BotAlertDB.level == "critical",
+            BotAlertDB.created_at >= since,
+        )
         .all()
     )
 
@@ -1659,14 +1676,19 @@ async def _check_private_auth(wallet: str, signing_key: str, use_testnet: bool) 
 
 
 async def _sync_positions_with_best_executor() -> dict:
+    global _position_sync_last_run_ts, _position_sync_last_result
+    now_ts = _time.time()
+    if _position_sync_last_result and (now_ts - _position_sync_last_run_ts) < _position_sync_min_interval_sec:
+        cached = dict(_position_sync_last_result)
+        cached["throttled"] = True
+        cached["throttled_for_sec"] = round(_position_sync_min_interval_sec - (now_ts - _position_sync_last_run_ts), 3)
+        return cached
+
     env = _read_env_values()
-    wallet = env.get("HYPERLIQUID_WALLET_ADDRESS", "")
-    signing_key = env.get("HYPERLIQUID_SIGNING_KEY", "")
-    if not (HyperliquidExecutor._is_valid_wallet(wallet) and HyperliquidExecutor._is_valid_private_key(signing_key)):
-        wallet_db, signing_key_db = get_hyperliquid_wallet_and_key()
-        if wallet_db and signing_key_db:
-            wallet = wallet_db
-            signing_key = signing_key_db
+    # Use unified credential resolver (.env or encrypted DB) for consistency with settings checks.
+    wallet, signing_key = get_hyperliquid_wallet_and_key()
+    wallet = wallet or ""
+    signing_key = signing_key or ""
     use_testnet = str(env.get("HYPERLIQUID_USE_TESTNET", "True")).strip().lower() == "true"
 
     wallet_ok = HyperliquidExecutor._is_valid_wallet(wallet)
@@ -1687,6 +1709,9 @@ async def _sync_positions_with_best_executor() -> dict:
     sync_service = PositionSyncService(executor)
     results = await sync_service.sync_positions()
     results["executor"] = executor_name
+    results["throttled"] = False
+    _position_sync_last_run_ts = now_ts
+    _position_sync_last_result = dict(results)
     return results
 
 
@@ -1774,14 +1799,16 @@ async def _activate_bot_for_production_internal(
         db.commit()
         return result
 
-    if not selected.get("candidate_for_production"):
+    readiness = dict(selected.get("readiness") or {})
+    gate_ok = bool(readiness.get("gate_ok"))
+    if (not selected.get("candidate_for_production")) or (not gate_ok):
         result = {
             "activated": False,
             "bot_id": bot_id,
             "reason": "bot_not_ready_for_production",
             "metrics": selected.get("metrics"),
             "critical_open_alerts": selected.get("critical_open_alerts"),
-            "readiness": selected.get("readiness"),
+            "readiness": readiness,
         }
         _audit_production_activation(
             db,
@@ -1792,7 +1819,7 @@ async def _activate_bot_for_production_internal(
             details={
                 "metrics": selected.get("metrics"),
                 "critical_open_alerts": selected.get("critical_open_alerts"),
-                "readiness": selected.get("readiness"),
+                "readiness": readiness,
             },
         )
         db.commit()
@@ -1823,9 +1850,10 @@ async def _activate_bot_for_production_internal(
         db.commit()
         return result
 
-    env = _read_env_values()
-    wallet = env.get("HYPERLIQUID_WALLET_ADDRESS", "")
-    signing_key = env.get("HYPERLIQUID_SIGNING_KEY", "")
+    # Resolve credentials from .env or encrypted DB (same source as settings endpoint).
+    wallet, signing_key = get_hyperliquid_wallet_and_key()
+    wallet = wallet or ""
+    signing_key = signing_key or ""
     wallet_ok = HyperliquidExecutor._is_valid_wallet(wallet)
     key_ok = HyperliquidExecutor._is_valid_private_key(signing_key)
     if not wallet_ok or not key_ok:
@@ -2154,6 +2182,23 @@ async def startup_event():
         except Exception as e:
             print(f"[Startup] paper_monitor_runtime start skipped: {e}")
 
+    # Reconcile immediately after restart/crash recovery so open positions and running bots
+    # are controlled before autonomous loops continue.
+    if _autonomy_watchdog_enabled and _autonomy_watchdog_run_on_startup:
+        try:
+            _autonomy_watchdog_last_report = await asyncio.wait_for(
+                _autonomy_watchdog_once(trigger="startup_reconcile"),
+                timeout=30,
+            )
+            print(
+                "[Startup] autonomy startup reconcile "
+                f"restarted={len(_autonomy_watchdog_last_report.get('restarted_bots') or [])} "
+                f"reassigned={len(_autonomy_watchdog_last_report.get('reassigned_positions') or [])} "
+                f"unresolved={len(_autonomy_watchdog_last_report.get('unresolved_positions') or [])}"
+            )
+        except Exception as e:
+            print(f"[Startup] autonomy startup reconcile skipped: {e}")
+
     if _auto_production_promotion_enabled and (_auto_production_loop_task is None or _auto_production_loop_task.done()):
         _auto_production_loop_running = True
         _auto_production_loop_task = asyncio.create_task(_auto_production_promotion_loop())
@@ -2278,6 +2323,7 @@ async def health_check(db: Session = Depends(get_db)):
 async def get_autonomy_watchdog_status():
     return {
         "enabled": bool(_autonomy_watchdog_enabled),
+        "run_on_startup": bool(_autonomy_watchdog_run_on_startup),
         "running": bool(_autonomy_watchdog_loop_running),
         "interval_sec": int(_autonomy_watchdog_interval_sec),
         "sync_positions": bool(_autonomy_watchdog_sync_positions),
@@ -2593,6 +2639,142 @@ async def run_production_scan():
 @app.get("/api/autotrader/orchestrator/status")
 async def autotrader_orchestrator_status():
     return adaptive_orchestrator.latest_status()
+
+
+@app.get("/api/copilot/total/status")
+async def copilot_total_status():
+    return adaptive_orchestrator.copilot_total_status()
+
+
+@app.post("/api/copilot/total/toggle")
+async def copilot_total_toggle(payload: dict = None):
+    payload = payload or {}
+    enabled = bool(payload.get("enabled", False))
+    requested_by = str(payload.get("requested_by") or "ui")
+    reason = str(payload.get("reason") or "manual_toggle")
+    autonomous_bootstrap = bool(payload.get("autonomous_bootstrap", True))
+    attack_window_minutes = int(payload.get("attack_window_minutes", 0) or 0)
+    status_payload = adaptive_orchestrator.set_copilot_total(
+        enabled=enabled,
+        requested_by=requested_by,
+        reason=reason,
+    )
+    runtime_actions = {
+        "paper_monitor": {"started": False, "detail": "not_requested"},
+        "orchestrator": {"started": False, "detail": "not_requested"},
+        "production_scan": {"executed": False},
+        "auto_activate_ready": {"executed": False},
+    }
+    if enabled and autonomous_bootstrap:
+        # One-switch autonomy: start runtime services and run full bootstrap cycle.
+        runtime_actions["paper_monitor"] = await paper_monitor_runtime.start(
+            hours=24,
+            interval_sec=120,
+            prefix="paper_lab_copilot_total",
+            trigger="copilot_total_enabled",
+        )
+        await adaptive_orchestrator.start()
+        runtime_actions["orchestrator"] = {
+            "started": True,
+            "running": True,
+            "interval_sec": adaptive_orchestrator.interval_sec,
+        }
+        runtime_actions["production_scan"] = await production_guard.scan_once(trigger="copilot_total_enabled")
+        await adaptive_orchestrator.run_once(trigger="copilot_total_enabled")
+        with SessionLocal() as db:
+            runtime_actions["auto_activate_ready"] = await _auto_activate_ready_bots_internal(
+                db,
+                lookback_hours=72,
+                min_scored_trades=12,
+                top_n=3,
+                require_runtime_ready=False,
+                max_last_trade_age_hours=12.0,
+                auto_patch_executor=True,
+                trigger="copilot_total_enabled",
+            )
+        if attack_window_minutes > 0:
+            status_payload = adaptive_orchestrator.set_attack_window(
+                minutes=attack_window_minutes,
+                requested_by=requested_by,
+                reason="copilot_total_bootstrap_attack_window",
+            )
+            await adaptive_orchestrator.run_once(trigger="copilot_total_bootstrap_attack_window")
+    elif not enabled:
+        # Turn off autonomous runtime loop when copilot is disabled.
+        await paper_monitor_runtime.stop(trigger="copilot_total_disabled")
+        await adaptive_orchestrator.stop()
+        runtime_actions["paper_monitor"] = {"stopped": True}
+        runtime_actions["orchestrator"] = {"stopped": True}
+    return {
+        "ok": True,
+        "copilot_total": status_payload,
+        "runtime_actions": runtime_actions,
+    }
+
+
+@app.post("/api/copilot/total/attack-window")
+async def copilot_total_attack_window(payload: dict = None):
+    payload = payload or {}
+    raw_minutes = payload.get("minutes", 45)
+    minutes = 45 if raw_minutes is None else int(raw_minutes)
+    requested_by = str(payload.get("requested_by") or "ui")
+    reason = str(payload.get("reason") or "user_attack_window")
+    status_payload = adaptive_orchestrator.set_attack_window(
+        minutes=minutes,
+        requested_by=requested_by,
+        reason=reason,
+    )
+    if status_payload.get("enabled"):
+        await adaptive_orchestrator.run_once(trigger="copilot_attack_window_update")
+    return {
+        "ok": True,
+        "copilot_total": status_payload,
+    }
+
+
+@app.get("/api/copilot/decisions")
+async def copilot_decisions(
+    limit: int = 100,
+    bot_id: str | None = None,
+    since_hours: int = 72,
+    db: Session = Depends(get_db),
+):
+    lim = max(1, min(int(limit or 100), 500))
+    hrs = max(1, min(int(since_hours or 72), 24 * 90))
+    since_dt = datetime.utcnow() - timedelta(hours=hrs)
+
+    query = (
+        db.query(AutopilotDecisionLogDB)
+        .filter(AutopilotDecisionLogDB.created_at >= since_dt)
+        .order_by(AutopilotDecisionLogDB.created_at.desc())
+    )
+    if bot_id:
+        query = query.filter(AutopilotDecisionLogDB.bot_id == str(bot_id).strip())
+
+    rows = query.limit(lim).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "created_at": row.created_at,
+                "trigger": row.trigger,
+                "bot_id": row.bot_id,
+                "symbol": row.symbol,
+                "profile": row.profile,
+                "reason_code": row.reason_code,
+                "reason_text": row.reason_text,
+                "market_context": row.market_context or {},
+                "metrics": row.metrics or {},
+                "changes": row.changes or {},
+                "extra": row.extra or {},
+            }
+            for row in rows
+        ],
+        "count": len(rows),
+        "limit": lim,
+        "bot_id": bot_id or "",
+        "since_hours": hrs,
+    }
 
 
 @app.post("/api/autotrader/orchestrator/run-once")
@@ -3276,7 +3458,8 @@ async def _auto_activate_ready_bots_internal(
         bot_id = str(item.get("bot_id") or "").strip()
         readiness = dict(item.get("readiness") or {})
 
-        if not item.get("candidate_for_production"):
+        readiness_gate_ok = bool(readiness.get("gate_ok"))
+        if (not item.get("candidate_for_production")) or (not readiness_gate_ok):
             blocked_not_ready += 1
             if bot_id and len(blocked_not_ready_samples) < 10:
                 blocked_not_ready_samples.append(
@@ -3723,7 +3906,11 @@ async def bots_performance_summary(
     trades = db.query(TradeDB).filter(TradeDB.time >= since).order_by(TradeDB.time.asc()).all()
     open_critical = (
         db.query(BotAlertDB)
-        .filter(BotAlertDB.acknowledged == False, BotAlertDB.level == "critical")
+        .filter(
+            BotAlertDB.acknowledged == False,
+            BotAlertDB.level == "critical",
+            BotAlertDB.created_at >= since,
+        )
         .all()
     )
     critical_map: dict = {}
