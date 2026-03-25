@@ -17,6 +17,7 @@ from apps.engine.risk import RiskEngine
 from apps.engine.production_policy import is_live_mainnet_config
 from apps.ai_engine.engine import AIEngine
 from apps.shared.database import SessionLocal
+from apps.shared.notifications import notify_event
 from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB, BotLearningStateDB, TradeSignal
 
 
@@ -899,6 +900,23 @@ class BotInstance:
                 float(pnl_amount) - float(fee_amount),
                 executed_side=(signal.side.value if hasattr(signal.side, "value") else str(signal.side)),
                 executed_price=float(execution.avg_price or 0.0),
+            )
+
+            side_text = signal.side.value if hasattr(signal.side, "value") else str(signal.side)
+            notify_event(
+                "TRADE_EXECUTED",
+                {
+                    "bot_id": self.bot_id,
+                    "strategy": strategy_name,
+                    "executor": executor_type,
+                    "symbol": signal.symbol,
+                    "side": side_text,
+                    "price": round(float(execution.avg_price or 0.0), 6),
+                    "amount": round(float(execution.filled_amount or 0.0), 8),
+                    "pnl": round(float(pnl_amount or 0.0), 6),
+                    "fee": round(float(fee_amount or 0.0), 6),
+                    "net": round(float(pnl_amount or 0.0) - float(fee_amount or 0.0), 6),
+                },
             )
 
         return execution_accepted, pnl_amount, fee_amount

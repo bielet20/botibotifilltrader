@@ -7,6 +7,7 @@ from typing import Dict, Any, List
 from apps.shared.database import SessionLocal
 from apps.shared.models import BotDB, TradeDB, BotAlertDB, OrderLogDB, PositionDB
 from apps.engine.production_policy import is_live_mainnet_config
+from apps.shared.notifications import notify_event
 
 
 class ProductionGuardService:
@@ -140,6 +141,18 @@ class ProductionGuardService:
             "data": data,
         }
         self._append_event_file(event)
+        notify_event(
+            "PRODUCTION_ALERT",
+            {
+                "bot_id": bot_id,
+                "level": level,
+                "title": title,
+                "reason_code": reason_code,
+                "message": message,
+                "net_pnl": data.get("net_pnl"),
+                "consecutive_losses": data.get("consecutive_losses"),
+            },
+        )
 
     def _emit_global_alert(self, db, level: str, title: str, message: str, reason_code: str, data: Dict[str, Any]):
         key = f"GLOBAL|{reason_code}|{round(float(data.get('daily_net_pnl', 0.0) or 0.0), 2)}|{int(data.get('failed_orders_recent', 0) or 0)}"
@@ -167,6 +180,17 @@ class ProductionGuardService:
                 "reason_code": reason_code,
                 "data": data,
             }
+        )
+        notify_event(
+            "GLOBAL_GUARD_ALERT",
+            {
+                "level": level,
+                "title": title,
+                "reason_code": reason_code,
+                "message": message,
+                "daily_net_pnl": data.get("daily_net_pnl"),
+                "failed_orders_recent": data.get("failed_orders_recent"),
+            },
         )
 
     def _apply_global_kill_switch(self, db, trigger: str) -> Dict[str, Any]:

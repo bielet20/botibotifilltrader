@@ -53,10 +53,24 @@ from apps.shared.hyperliquid_credentials import (
     invalidate_hyperliquid_credentials_cache,
 )
 from apps.shared.bot_presets import list_bot_presets, get_bot_preset
+from apps.shared.notifications import (
+    notify_event,
+    parse_telegram_update_text,
+    send_telegram_message,
+    verify_telegram_secret,
+)
 from apps.engine.paper_portfolio import PaperPortfolioDB
 from apps.engine.position_sync import PositionSyncService
 from apps.engine.hyperliquid_executor import HyperliquidExecutor
 from apps.engine.market_data import MarketDataEngine
+from apps.engine.production_policy import (
+    config_promotion_flag_ok,
+    hyperliquid_testnet_resolved,
+    is_live_mainnet_config,
+    promotion_sort_key,
+    resolve_daily_blockers_params,
+    resolve_monitoring_window_params,
+)
 
 app = FastAPI(title="Trading Platform API Gateway")
 
@@ -88,19 +102,32 @@ production_guard = ProductionGuardService(bot_manager)
 adaptive_orchestrator = AdaptiveOrchestratorService(bot_manager, production_guard)
 paper_monitor_runtime = PaperMonitorRuntimeService()
 
-_auto_production_promotion_enabled = os.getenv("PRODUCTION_AUTO_PROMOTE_ENABLED", "true").lower() == "true"
+# Pipeline: pruebas OK en paper → marcar validación → pasar a Hyperliquid mainnet y arrancar (auto-promoción).
+_auto_real_production_from_paper = os.getenv("AUTO_REAL_PRODUCTION_FROM_PAPER", "true").lower() == "true"
+_auto_production_promotion_enabled = os.getenv(
+    "PRODUCTION_AUTO_PROMOTE_ENABLED",
+    "true" if _auto_real_production_from_paper else "false",
+).lower() == "true"
 _auto_production_promotion_interval_sec = max(30, int(os.getenv("PRODUCTION_AUTO_PROMOTE_INTERVAL_SEC", "120")))
-_auto_production_lookback_hours = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_LOOKBACK_HOURS", "24")))
-_auto_production_min_scored_trades = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_MIN_SCORED_TRADES", "8")))
+_auto_production_lookback_hours, _auto_production_min_scored_trades = resolve_monitoring_window_params()
 _auto_production_top_n = max(1, int(os.getenv("PRODUCTION_AUTO_PROMOTE_TOP_N", "2")))
 _auto_production_max_last_trade_age_hours = max(0.5, float(os.getenv("PRODUCTION_AUTO_PROMOTE_MAX_LAST_TRADE_AGE_HOURS", "6")))
+# Por defecto no exige paper_monitor ni orquestador: basta API + métricas buenas en paper (TradeDB).
+_auto_production_require_paper_monitor = os.getenv("PRODUCTION_AUTO_PROMOTE_REQUIRE_PAPER_MONITOR", "false").lower() == "true"
+_auto_production_require_orchestrator = os.getenv("PRODUCTION_AUTO_PROMOTE_REQUIRE_ORCHESTRATOR", "false").lower() == "true"
+# Solo promover bots que sigan en executor paper (resultados de paper antes de pasar a HL).
+_auto_production_paper_executor_only = os.getenv("PRODUCTION_AUTO_PROMOTE_PAPER_EXECUTOR_ONLY", "true").lower() == "true"
+# Si true, Hyperliquid mainnet no envía órdenes hasta paper_validation_passed (marcado al cumplir gate en paper).
+_require_paper_validation_for_live_mainnet = os.getenv(
+    "REQUIRE_PAPER_VALIDATION_FOR_LIVE_MAINNET", "false"
+).lower() in {"1", "true", "yes", "on"}
 _auto_production_loop_running = False
 _auto_production_loop_task = None
+_last_production_pipeline_run: dict = {}
 
 _daily_blockers_enabled = os.getenv("PRODUCTION_BLOCKERS_DAILY_ENABLED", "true").lower() == "true"
 _daily_blockers_interval_sec = max(900, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_INTERVAL_SEC", "86400")))
-_daily_blockers_lookback_hours = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_LOOKBACK_HOURS", "24")))
-_daily_blockers_min_scored_trades = max(1, int(os.getenv("PRODUCTION_BLOCKERS_DAILY_MIN_SCORED_TRADES", "8")))
+_daily_blockers_lookback_hours, _daily_blockers_min_scored_trades = resolve_daily_blockers_params()
 _daily_blockers_loop_running = False
 _daily_blockers_loop_task = None
 _market_regime_cache_ttl_sec = max(30, int(os.getenv("MARKET_REGIME_CACHE_TTL_SEC", "300")))
@@ -1200,29 +1227,45 @@ def _bot_config_from_prompt(prompt: str, symbol: str, allocation: float) -> dict
     }
 
 
-def _cfg_hyperliquid_testnet(cfg: dict) -> bool:
-    """True si Hyperliquid está en testnet (explícito en config o por defecto env)."""
-    conf = dict(cfg or {})
-    if "hyperliquid_testnet" in conf and conf.get("hyperliquid_testnet") is not None:
-        return bool(conf.get("hyperliquid_testnet"))
-    return os.getenv("HYPERLIQUID_USE_TESTNET", "True").lower() == "true"
-
-
-def _is_live_mainnet_config(cfg: dict) -> bool:
-    conf = dict(cfg or {})
-    executor = str(conf.get("executor") or "paper").strip().lower()
-    if executor != "hyperliquid":
-        return False
-    return not _cfg_hyperliquid_testnet(conf)
-
-
 def _analysis_gate_ok(cfg: dict) -> bool:
-    conf = dict(cfg or {})
-    return bool(
-        conf.get("analysis_approved")
-        or conf.get("candidate_for_production")
-        or conf.get("production_ready")
-    )
+    return config_promotion_flag_ok(cfg)
+
+
+def _production_gate_profile() -> str:
+    """
+    strict: umbrales anteriores (más exigente).
+    moderate: equilibrio riesgo/recompensa (por defecto).
+    relaxed: más permisivo (solo si se configura explícitamente).
+    """
+    p = str(os.getenv("PRODUCTION_GATE_PROFILE", "moderate") or "moderate").strip().lower()
+    if p not in {"strict", "moderate", "relaxed"}:
+        return "moderate"
+    return p
+
+
+def _gate_baseline_for_strategy(profile: str, strategy_l: str) -> tuple[float, float]:
+    """(min_win_rate, min_profit_factor) antes de ajustes por régimen."""
+    if profile == "strict":
+        wr, pf = 55.0, 1.05
+        if "adaptive" in strategy_l:
+            wr, pf = 56.0, 1.04
+        elif "pair" in strategy_l:
+            wr, pf = 57.0, 1.06
+        return wr, pf
+    if profile == "relaxed":
+        wr, pf = 51.0, 1.02
+        if "adaptive" in strategy_l:
+            wr, pf = 52.0, 1.018
+        elif "pair" in strategy_l:
+            wr, pf = 54.0, 1.035
+        return wr, pf
+    # moderate (default): exigencia clara pero alcanzable en paper/live pequeño
+    wr, pf = 53.0, 1.03
+    if "adaptive" in strategy_l:
+        wr, pf = 54.0, 1.025
+    elif "pair" in strategy_l:
+        wr, pf = 55.0, 1.04
+    return wr, pf
 
 
 def _evaluate_production_readiness(
@@ -1237,20 +1280,16 @@ def _evaluate_production_readiness(
     strategy_l = str(strategy or "").strip().lower()
     regime_ctx = dict(market_regime_context or {})
     regime = str(regime_ctx.get("regime") or "mixed").strip().lower()
+    gate_profile = _production_gate_profile()
 
-    # Strategy-aware thresholds: tuned to accelerate promotion without weakening safety.
-    min_win_rate = 55.0
-    min_profit_factor = 1.05
+    min_win_rate, min_profit_factor = _gate_baseline_for_strategy(gate_profile, strategy_l)
     min_trades_required = int(min_scored_trades)
     if "grid" in strategy_l:
-        min_trades_required = max(6, int(min_scored_trades) - 1)
-    elif "adaptive" in strategy_l:
-        min_win_rate = 56.0
-        min_profit_factor = 1.04
+        floor = 5 if gate_profile == "moderate" else (6 if gate_profile == "strict" else 4)
+        min_trades_required = max(floor, int(min_scored_trades) - 1)
     elif "pair" in strategy_l:
-        min_win_rate = 57.0
-        min_profit_factor = 1.06
-        min_trades_required = max(10, int(min_scored_trades))
+        pair_floor = 8 if gate_profile == "moderate" else (10 if gate_profile == "strict" else 6)
+        min_trades_required = max(pair_floor, int(min_scored_trades))
 
     # Regime-aware dynamic guardrails (bull/bear/sideways).
     strategy_is_trend = any(k in strategy_l for k in ["ema", "technical", "adaptive"])
@@ -1348,6 +1387,7 @@ def _evaluate_production_readiness(
         "summary": summary,
         "strategy": strategy,
         "market_regime": regime,
+        "gate_profile": gate_profile,
         "thresholds": {
             "min_scored_trades": min_trades_required,
             "min_win_rate": min_win_rate,
@@ -1570,6 +1610,8 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
         if allow_flag_override and _analysis_gate_ok(dict(bot.config or {})):
             candidate_core = True
 
+        stat_gate_ok = bool(readiness.get("gate_ok"))
+        cfg_dict = dict(bot.config or {})
         results.append(
             {
                 "bot_id": bot.id,
@@ -1578,6 +1620,8 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
                 "last_trade_at": last_trade_at,
                 "critical_open_alerts": critical_open_count,
                 "candidate_for_production": candidate_core,
+                "stat_gate_ok": stat_gate_ok,
+                "config_promotion_flag": config_promotion_flag_ok(cfg_dict),
                 "runtime_ready": runtime_ready,
                 "metrics": metrics,
                 "readiness": readiness,
@@ -1585,27 +1629,28 @@ def _build_monitoring_test_results(db: Session, lookback_hours: int, min_scored_
             }
         )
 
-    results.sort(
-        key=lambda item: (
-            bool(item.get("candidate_for_production")),
-            float(item.get("metrics", {}).get("net_pnl", 0.0)),
-            float(item.get("metrics", {}).get("win_rate", 0.0)),
-        ),
-        reverse=True,
-    )
+    results.sort(key=promotion_sort_key, reverse=True)
 
-    top_candidates = [item for item in results if item.get("candidate_for_production")][:5]
+    gate_ok_rows = [item for item in results if bool(dict(item.get("readiness") or {}).get("gate_ok"))]
+    top_candidates = gate_ok_rows[:5]
+    flag_only = [
+        item
+        for item in results
+        if bool(item.get("candidate_for_production")) and not bool(dict(item.get("readiness") or {}).get("gate_ok"))
+    ]
     profitable_count = sum(1 for item in results if float(item.get("metrics", {}).get("net_pnl", 0.0)) > 0)
 
     return {
         "window_hours": lookback_hours,
         "min_scored_trades": min_scored_trades,
+        "gate_profile": _production_gate_profile(),
         "market_regime": market_regime_context,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "bots_analyzed": len(results),
             "profitable_bots": profitable_count,
-            "production_candidates": len(top_candidates),
+            "production_candidates": len(gate_ok_rows),
+            "promotion_flag_without_stat_gate": len(flag_only),
             "critical_alerts_open": len(open_critical_alerts),
         },
         "top_candidates": top_candidates,
@@ -1778,6 +1823,7 @@ async def _activate_bot_for_production_internal(
     lookback_hours: int,
     min_scored_trades: int,
     trigger: str,
+    monitoring_snapshot: dict | None = None,
 ) -> dict:
     bot_entry = db.query(BotDB).filter(BotDB.id == bot_id).first()
     if not bot_entry:
@@ -1791,7 +1837,9 @@ async def _activate_bot_for_production_internal(
         db.commit()
         return result
 
-    monitoring = _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
+    monitoring = monitoring_snapshot if monitoring_snapshot is not None else _build_monitoring_test_results(
+        db, lookback_hours, min_scored_trades
+    )
     selected = next((item for item in monitoring.get("results", []) if item.get("bot_id") == bot_id), None)
     if not selected:
         result = {"activated": False, "bot_id": bot_id, "reason": "no_monitoring_data"}
@@ -1927,6 +1975,12 @@ async def _activate_bot_for_production_internal(
         )
         db.commit()
         return result
+
+    cfg["paper_validation_passed"] = True
+    cfg["paper_validation_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["paper_validation_basis"] = "production_activation_gate_ok"
+    bot_entry.config = cfg
+    db.commit()
 
     started = bot_manager.start_bot(bot_id, cfg)
     if not started:
@@ -2151,8 +2205,14 @@ async def startup_event():
     global _daily_blockers_loop_running, _daily_blockers_loop_task
     global _db_backup_loop_running, _db_backup_loop_task
     global _autonomy_watchdog_loop_running, _autonomy_watchdog_loop_task
+    global _auto_real_production_from_paper, _auto_production_promotion_enabled
     # override=False: variables ya definidas en el entorno (Docker/shell) tienen prioridad sobre .env
     load_dotenv(_env_file_path(), override=False)
+    _auto_real_production_from_paper = os.getenv("AUTO_REAL_PRODUCTION_FROM_PAPER", "true").lower() == "true"
+    _auto_production_promotion_enabled = os.getenv(
+        "PRODUCTION_AUTO_PROMOTE_ENABLED",
+        "true" if _auto_real_production_from_paper else "false",
+    ).lower() == "true"
     adaptive_orchestrator.refresh_from_env()
     init_db()
     if _auth_enabled() and not _auth_is_configured():
@@ -2204,9 +2264,16 @@ async def startup_event():
         _auto_production_loop_running = True
         _auto_production_loop_task = asyncio.create_task(_auto_production_promotion_loop())
         print(
-            "[Startup] auto production promotion loop enabled "
-            f"(interval={_auto_production_promotion_interval_sec}s, min_trades={_auto_production_min_scored_trades})"
+            "[Startup] paper→real production pipeline "
+            f"(AUTO_REAL_PRODUCTION_FROM_PAPER={_auto_real_production_from_paper}, "
+            f"interval={_auto_production_promotion_interval_sec}s, min_trades={_auto_production_min_scored_trades}, "
+            f"require_paper_monitor={_auto_production_require_paper_monitor}, "
+            f"require_orchestrator={_auto_production_require_orchestrator}, "
+            f"paper_executor_only={_auto_production_paper_executor_only}, "
+            f"require_paper_validation_for_live_mainnet={_require_paper_validation_for_live_mainnet})"
         )
+        if _auto_real_production_from_paper:
+            asyncio.create_task(_auto_production_bootstrap_once())
 
     if _daily_blockers_enabled and (_daily_blockers_loop_task is None or _daily_blockers_loop_task.done()):
         _daily_blockers_loop_running = True
@@ -2692,6 +2759,7 @@ async def copilot_total_toggle(payload: dict = None):
                 max_last_trade_age_hours=12.0,
                 auto_patch_executor=True,
                 trigger="copilot_total_enabled",
+                paper_executor_only=True,
             )
         if attack_window_minutes > 0:
             status_payload = adaptive_orchestrator.set_attack_window(
@@ -3395,11 +3463,105 @@ async def monitoring_recommendations(payload: dict = None, db: Session = Depends
     }
 
 
+@app.get("/api/monitoring/production-pipeline-status")
+async def production_pipeline_status(
+    db: Session = Depends(get_db),
+    diagnose: bool = False,
+):
+    """
+    Estado del pipeline paper→mainnet: último ciclo, flags de entorno y (opcional) diagnóstico rápido.
+    """
+    global _last_production_pipeline_run, _auto_real_production_from_paper, _auto_production_promotion_enabled
+    loop_task_running = bool(
+        _auto_production_loop_task and not _auto_production_loop_task.done()
+    )
+    out: dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "config": {
+            "AUTO_REAL_PRODUCTION_FROM_PAPER": _auto_real_production_from_paper,
+            "PRODUCTION_AUTO_PROMOTE_ENABLED": _auto_production_promotion_enabled,
+            "interval_sec": _auto_production_promotion_interval_sec,
+            "lookback_hours": _auto_production_lookback_hours,
+            "min_scored_trades": _auto_production_min_scored_trades,
+            "top_n": _auto_production_top_n,
+            "require_paper_monitor": _auto_production_require_paper_monitor,
+            "require_orchestrator": _auto_production_require_orchestrator,
+            "paper_executor_only": _auto_production_paper_executor_only,
+            "require_paper_validation_for_live_mainnet": _require_paper_validation_for_live_mainnet,
+        },
+        "loop_running": bool(_auto_production_loop_running and loop_task_running),
+        "last_run": dict(_last_production_pipeline_run or {}),
+        "hints": [],
+    }
+    wallet, sk = get_hyperliquid_wallet_and_key()
+    w_ok = HyperliquidExecutor._is_valid_wallet(wallet or "")
+    k_ok = HyperliquidExecutor._is_valid_private_key(sk or "")
+    out["hyperliquid_credentials_ok"] = bool(w_ok and k_ok)
+
+    if not out["loop_running"] and _auto_production_promotion_enabled:
+        out["hints"].append(
+            "El bucle de promoción no está activo (reinicia la API o revisa que PRODUCTION_AUTO_PROMOTE_ENABLED sea true tras cargar .env)."
+        )
+    if not _auto_production_promotion_enabled:
+        out["hints"].append(
+            "Auto-promoción desactivada: pon AUTO_REAL_PRODUCTION_FROM_PAPER=true o PRODUCTION_AUTO_PROMOTE_ENABLED=true."
+        )
+    if not out["hyperliquid_credentials_ok"]:
+        out["hints"].append(
+            "Sin wallet/firma Hyperliquid válidas en entorno o BD: la activación a mainnet fallará hasta configurarlas."
+        )
+
+    lr = out.get("last_run") or {}
+    if lr.get("ok") and int(lr.get("blocked_not_ready") or 0) > 0 and int(lr.get("activated") or 0) == 0:
+        out["hints"].append(
+            "Último ciclo: ningún bot cumplió gate+candidato a la vez (revisa ventana de horas y mínimo de trades en Centro de Control)."
+        )
+    if lr.get("ok") and int(lr.get("skipped_not_paper_executor") or 0) > 0 and int(lr.get("activated") or 0) == 0:
+        out["hints"].append(
+            "Hay candidatos al gate pero no en executor paper: el pipeline solo sube bots que siguen en paper (PRODUCTION_AUTO_PROMOTE_PAPER_EXECUTOR_ONLY)."
+        )
+
+    if diagnose:
+        mon = _build_monitoring_test_results(
+            db, _auto_production_lookback_hours, _auto_production_min_scored_trades
+        )
+        rows = list(mon.get("results") or [])
+        gate_ok = 0
+        paper_gate_ok = 0
+        paper_running = 0
+        bots_map = {b.id: b for b in db.query(BotDB).filter(BotDB.is_archived == False).all()}
+        for r in rows:
+            rd = dict(r.get("readiness") or {})
+            if rd.get("gate_ok"):
+                gate_ok += 1
+            bid = str(r.get("bot_id") or "")
+            b = bots_map.get(bid)
+            if not b:
+                continue
+            cfg = dict(b.config or {})
+            ex = str(cfg.get("executor") or "paper").lower()
+            if ex == "paper" and rd.get("gate_ok"):
+                paper_gate_ok += 1
+            if ex == "paper" and str(b.status or "").lower() == "running":
+                paper_running += 1
+        out["diagnose"] = {
+            "window_hours": mon.get("window_hours"),
+            "min_scored_trades": mon.get("min_scored_trades"),
+            "bots_analyzed": len(rows),
+            "gate_ok_count": gate_ok,
+            "paper_executor_gate_ok_count": paper_gate_ok,
+            "paper_executor_running_count": paper_running,
+            "gate_profile": mon.get("gate_profile"),
+        }
+
+    return out
+
+
 @app.post("/api/monitoring/test-results")
 async def monitoring_test_results(payload: dict = None, db: Session = Depends(get_db)):
     payload = payload or {}
     lookback_hours = int(payload.get("lookback_hours", 24) or 24)
-    min_scored_trades = int(payload.get("min_scored_trades", 5) or 5)
+    min_scored_trades = int(payload.get("min_scored_trades", 6) or 6)
 
     lookback_hours = max(1, min(lookback_hours, 24 * 30))
     min_scored_trades = max(1, min(min_scored_trades, 200))
@@ -3412,7 +3574,7 @@ async def activate_bot_for_production(payload: dict = None, db: Session = Depend
     payload = payload or {}
     bot_id = str(payload.get("bot_id") or "").strip()
     lookback_hours = int(payload.get("lookback_hours", 24) or 24)
-    min_scored_trades = int(payload.get("min_scored_trades", 8) or 8)
+    min_scored_trades = int(payload.get("min_scored_trades", 6) or 6)
 
     if not bot_id:
         raise HTTPException(status_code=400, detail="bot_id is required")
@@ -3436,6 +3598,40 @@ async def activate_bot_for_production(payload: dict = None, db: Session = Depend
     return result
 
 
+def _sync_paper_validation_flags_from_monitoring(db: Session, monitoring: dict) -> int:
+    """
+    Marca paper_validation_passed en bots que siguen en paper y cumplen gate estadístico.
+    Así la lógica "buenos resultados en paper → luego mainnet" queda explícita en config.
+    """
+    changed = 0
+    bots_map = {b.id: b for b in db.query(BotDB).filter(BotDB.is_archived == False).all()}
+    for item in monitoring.get("results", []):
+        bot_id = str(item.get("bot_id") or "").strip()
+        if not bot_id:
+            continue
+        readiness = dict(item.get("readiness") or {})
+        if not bool(readiness.get("gate_ok")):
+            continue
+        bot = bots_map.get(bot_id)
+        if not bot:
+            continue
+        cfg = dict(bot.config or {})
+        if str(cfg.get("executor") or "paper").strip().lower() != "paper":
+            continue
+        if bool(cfg.get("paper_validation_passed")):
+            continue
+        cfg["paper_validation_passed"] = True
+        cfg["paper_validation_at"] = datetime.now(timezone.utc).isoformat()
+        cfg["paper_validation_basis"] = "monitoring_gate_ok"
+        bot.config = cfg
+        changed += 1
+        if bot_id in bot_manager.active_bots:
+            bot_manager.active_bots[bot_id].reconfigure(cfg)
+    if changed:
+        db.commit()
+    return changed
+
+
 async def _auto_activate_ready_bots_internal(
     db: Session,
     *,
@@ -3446,14 +3642,25 @@ async def _auto_activate_ready_bots_internal(
     max_last_trade_age_hours: float,
     auto_patch_executor: bool,
     trigger: str,
+    paper_executor_only: bool | None = None,
+    monitoring_snapshot: dict | None = None,
 ) -> dict:
-    monitoring = _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
+    monitoring = (
+        monitoring_snapshot
+        if monitoring_snapshot is not None
+        else _build_monitoring_test_results(db, lookback_hours, min_scored_trades)
+    )
     now = datetime.utcnow()
     skipped_not_running = 0
     skipped_stale_trade = 0
+    skipped_not_paper_executor = 0
     blocked_not_ready = 0
     blocked_not_ready_samples = []
     candidates = []
+    _paper_only = (
+        _auto_production_paper_executor_only if paper_executor_only is None else paper_executor_only
+    )
+    bots_map = {b.id: b for b in db.query(BotDB).filter(BotDB.is_archived == False).all()}
 
     for item in monitoring.get("results", []):
         bot_id = str(item.get("bot_id") or "").strip()
@@ -3472,6 +3679,16 @@ async def _auto_activate_ready_bots_internal(
                     }
                 )
             continue
+
+        if _paper_only:
+            bot_row = bots_map.get(bot_id)
+            if not bot_row:
+                skipped_not_paper_executor += 1
+                continue
+            ex = str(dict(bot_row.config or {}).get("executor") or "paper").strip().lower()
+            if ex != "paper":
+                skipped_not_paper_executor += 1
+                continue
 
         if require_runtime_ready and not item.get("runtime_ready"):
             skipped_not_running += 1
@@ -3505,6 +3722,7 @@ async def _auto_activate_ready_bots_internal(
             lookback_hours=lookback_hours,
             min_scored_trades=min_scored_trades,
             trigger=trigger,
+            monitoring_snapshot=monitoring,
         )
 
         if (not first_attempt.get("activated")) and auto_patch_executor:
@@ -3518,6 +3736,7 @@ async def _auto_activate_ready_bots_internal(
                     lookback_hours=lookback_hours,
                     min_scored_trades=min_scored_trades,
                     trigger=f"{trigger}_after_executor_patch",
+                    monitoring_snapshot=monitoring,
                 )
                 first_attempt["auto_patched"] = True
                 first_attempt["auto_patch"] = suggested_patch
@@ -3530,6 +3749,7 @@ async def _auto_activate_ready_bots_internal(
                     lookback_hours=lookback_hours,
                     min_scored_trades=min_scored_trades,
                     trigger=f"{trigger}_after_testnet_patch",
+                    monitoring_snapshot=monitoring,
                 )
                 first_attempt["auto_patched"] = True
                 first_attempt["auto_patch"] = patch
@@ -3548,6 +3768,8 @@ async def _auto_activate_ready_bots_internal(
         "max_last_trade_age_hours": max_last_trade_age_hours,
         "skipped_not_running": skipped_not_running,
         "skipped_stale_trade": skipped_stale_trade,
+        "skipped_not_paper_executor": skipped_not_paper_executor,
+        "paper_executor_only": _paper_only,
         "blocked_not_ready": blocked_not_ready,
         "blocked_not_ready_samples": blocked_not_ready_samples,
         "production_candidates_detected": len(candidates),
@@ -3558,34 +3780,122 @@ async def _auto_activate_ready_bots_internal(
     }
 
 
+def _record_production_pipeline_success(trigger: str, summary: dict, marked: int) -> None:
+    global _last_production_pipeline_run
+    _last_production_pipeline_run = {
+        "ok": True,
+        "error": None,
+        "trigger": trigger,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "marked_paper_validation": marked,
+        "activated": summary.get("activated"),
+        "attempted": summary.get("attempted"),
+        "blocked": summary.get("blocked"),
+        "blocked_not_ready": summary.get("blocked_not_ready"),
+        "skipped_not_paper_executor": summary.get("skipped_not_paper_executor"),
+        "skipped_not_running": summary.get("skipped_not_running"),
+        "production_candidates_detected": summary.get("production_candidates_detected"),
+        "paper_executor_only": summary.get("paper_executor_only"),
+        "first_activation_reason": (summary.get("results") or [{}])[0].get("reason")
+        if summary.get("results")
+        else None,
+    }
+
+
+def _record_production_pipeline_error(trigger: str, err: str) -> None:
+    global _last_production_pipeline_run
+    prev = dict(_last_production_pipeline_run or {})
+    _last_production_pipeline_run = {
+        **prev,
+        "ok": False,
+        "error": err,
+        "trigger": trigger,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _run_paper_to_real_production_pipeline(db: Session, trigger: str) -> dict:
+    """
+    Un ciclo: monitoring → marcar paper_validation en bots paper con gate OK →
+    activar hasta top_n candidatos (paper → patch HL mainnet → start).
+    """
+    monitoring = _build_monitoring_test_results(
+        db,
+        _auto_production_lookback_hours,
+        _auto_production_min_scored_trades,
+    )
+    marked = _sync_paper_validation_flags_from_monitoring(db, monitoring)
+    summary = await _auto_activate_ready_bots_internal(
+        db,
+        lookback_hours=_auto_production_lookback_hours,
+        min_scored_trades=_auto_production_min_scored_trades,
+        top_n=_auto_production_top_n,
+        require_runtime_ready=False,
+        max_last_trade_age_hours=_auto_production_max_last_trade_age_hours,
+        auto_patch_executor=True,
+        trigger=trigger,
+        paper_executor_only=None,
+        monitoring_snapshot=monitoring,
+    )
+    _record_production_pipeline_success(trigger, summary, marked)
+    return {"summary": summary, "marked_paper_validation": marked}
+
+
+async def _auto_production_bootstrap_once() -> None:
+    """Primera pasada poco después del arranque (no hace falta esperar al intervalo del bucle)."""
+    await asyncio.sleep(6)
+    if not _auto_production_promotion_enabled or not _auto_real_production_from_paper:
+        return
+    try:
+        with SessionLocal() as db:
+            out = await _run_paper_to_real_production_pipeline(db, trigger="startup_bootstrap")
+        summary = out["summary"]
+        marked = out["marked_paper_validation"]
+        print(
+            "[AutoPromotion] startup_bootstrap "
+            f"activated={summary.get('activated', 0)} "
+            f"not_ready={summary.get('blocked_not_ready', 0)} "
+            f"marked_paper_validation={marked}"
+        )
+    except Exception as e:
+        _record_production_pipeline_error("startup_bootstrap", str(e))
+        print(f"[AutoPromotion] startup_bootstrap failed: {e}")
+
+
 async def _auto_production_promotion_loop() -> None:
     global _auto_production_loop_running
     while _auto_production_loop_running:
         try:
-            ops_running = bool(paper_monitor_runtime.latest_status().get("running")) and bool(adaptive_orchestrator.latest_status().get("running"))
+            ops_running = True
+            if _auto_production_require_paper_monitor:
+                ops_running = ops_running and bool(paper_monitor_runtime.latest_status().get("running"))
+            if _auto_production_require_orchestrator:
+                ops_running = ops_running and bool(adaptive_orchestrator.latest_status().get("running"))
             if not ops_running:
                 await asyncio.sleep(_auto_production_promotion_interval_sec)
                 continue
 
             with SessionLocal() as db:
-                summary = await _auto_activate_ready_bots_internal(
-                    db,
-                    lookback_hours=_auto_production_lookback_hours,
-                    min_scored_trades=_auto_production_min_scored_trades,
-                    top_n=_auto_production_top_n,
-                    require_runtime_ready=False,
-                    max_last_trade_age_hours=_auto_production_max_last_trade_age_hours,
-                    auto_patch_executor=True,
-                    trigger="auto_scheduler",
-                )
-            if summary.get("attempted") or summary.get("blocked_not_ready"):
+                out = await _run_paper_to_real_production_pipeline(db, trigger="auto_scheduler")
+            summary = out["summary"]
+            marked = out["marked_paper_validation"]
+            if (
+                summary.get("attempted")
+                or summary.get("blocked_not_ready")
+                or summary.get("skipped_not_paper_executor")
+                or marked
+            ):
                 print(
                     "[AutoPromotion] "
                     f"activated={summary.get('activated', 0)} "
                     f"blocked={summary.get('blocked', 0)} "
-                    f"not_ready={summary.get('blocked_not_ready', 0)}"
+                    f"not_ready={summary.get('blocked_not_ready', 0)} "
+                    f"skip_non_paper={summary.get('skipped_not_paper_executor', 0)} "
+                    f"paper_only={summary.get('paper_executor_only')} "
+                    f"marked_paper_validation={marked}"
                 )
         except Exception as e:
+            _record_production_pipeline_error("auto_scheduler", str(e))
             print(f"[AutoPromotion] cycle failed: {e}")
 
         await asyncio.sleep(_auto_production_promotion_interval_sec)
@@ -3659,6 +3969,10 @@ async def auto_activate_ready_bots(payload: dict = None, db: Session = Depends(g
     require_runtime_ready = bool(payload.get("require_runtime_ready", False))
     max_last_trade_age_hours = float(payload.get("max_last_trade_age_hours", 6.0) or 6.0)
     auto_patch_executor = bool(payload.get("auto_patch_executor", True))
+    paper_executor_only = payload.get("paper_executor_only")
+    if paper_executor_only is not None:
+        paper_executor_only = bool(paper_executor_only)
+    monitoring_snapshot = payload.get("monitoring_snapshot")
 
     lookback_hours = max(1, min(lookback_hours, 24 * 30))
     min_scored_trades = max(1, min(min_scored_trades, 200))
@@ -3674,6 +3988,8 @@ async def auto_activate_ready_bots(payload: dict = None, db: Session = Depends(g
         max_last_trade_age_hours=max_last_trade_age_hours,
         auto_patch_executor=auto_patch_executor,
         trigger="auto_mode_on",
+        paper_executor_only=paper_executor_only,
+        monitoring_snapshot=monitoring_snapshot if isinstance(monitoring_snapshot, dict) else None,
     )
 
 
@@ -3688,6 +4004,9 @@ async def prepare_bots_for_production(payload: dict = None, db: Session = Depend
     auto_activate_ready = bool(payload.get("auto_activate_ready", True))
     top_n_activate = int(payload.get("top_n_activate", 2) or 2)
     max_last_trade_age_hours = float(payload.get("max_last_trade_age_hours", 6.0) or 6.0)
+    paper_executor_only = payload.get("paper_executor_only")
+    if paper_executor_only is not None:
+        paper_executor_only = bool(paper_executor_only)
 
     lookback_hours = max(1, min(lookback_hours, 24 * 30))
     min_scored_trades = max(1, min(min_scored_trades, 200))
@@ -3767,6 +4086,7 @@ async def prepare_bots_for_production(payload: dict = None, db: Session = Depend
             max_last_trade_age_hours=max_last_trade_age_hours,
             auto_patch_executor=True,
             trigger="prepare_production",
+            paper_executor_only=paper_executor_only,
         )
 
     return {
@@ -3894,7 +4214,7 @@ async def list_bots(include_system: bool = True, db: Session = Depends(get_db)):
 @app.get("/api/bots/performance-summary")
 async def bots_performance_summary(
     lookback_hours: int = 168,
-    min_scored_trades: int = 8,
+    min_scored_trades: int = 6,
     db: Session = Depends(get_db),
 ):
     """
@@ -3964,13 +4284,13 @@ async def bots_performance_summary(
             market_regime_context=market_regime_context,
         )
 
-        live_main = _is_live_mainnet_config(cfg)
+        live_main = is_live_mainnet_config(cfg)
         gate_ok = _analysis_gate_ok(cfg)
         executor = str(cfg.get("executor") or "paper").strip().lower()
         if executor == "paper":
             network_label = "PAPER"
         elif executor == "hyperliquid":
-            network_label = "HL TESTNET" if _cfg_hyperliquid_testnet(cfg) else "HL MAINNET"
+            network_label = "HL TESTNET" if hyperliquid_testnet_resolved(cfg) else "HL MAINNET"
         else:
             network_label = executor.upper()
 
@@ -3981,7 +4301,7 @@ async def bots_performance_summary(
                 "status": bot.status,
                 "executor": executor,
                 "network_label": network_label,
-                "hyperliquid_testnet": _cfg_hyperliquid_testnet(cfg) if executor == "hyperliquid" else None,
+                "hyperliquid_testnet": hyperliquid_testnet_resolved(cfg) if executor == "hyperliquid" else None,
                 "metrics_window_hours": int(lookback_hours),
                 "metrics": metrics,
                 "readiness": {
@@ -4069,6 +4389,7 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
             "bot_id": bot_id,
             "horizon": horizon,
             "message": f"Bot {bot_id} updated using advisor recommendation ({rec.get('recommended_action')})",
+            "winning_trade_hints": analysis.get("winning_trade_hints"),
         }
 
     config = (rec.get("new_bot_config") or rec.get("edited_config") or {}).copy()
@@ -4094,6 +4415,23 @@ async def execute_bot_advisor(payload: dict = None, db: Session = Depends(get_db
         "bot_id": new_bot_id,
         "horizon": horizon,
         "message": f"Advisor created bot {new_bot_id} in STOPPED mode (analysis-first)",
+        "winning_trade_hints": analysis.get("winning_trade_hints"),
+    }
+
+
+@app.get("/api/bot-advisor/winning-hints")
+async def get_winning_trade_hints(
+    symbol: str = "BTC/USDT",
+    allocation: float = 500,
+    db: Session = Depends(get_db),
+):
+    """Resumen de setups históricos rentables y alineación con el régimen actual (solo lectura)."""
+    data = await build_bot_advice(db, symbol=symbol, allocation=float(allocation or 500))
+    return {
+        "symbol": data.get("symbol"),
+        "allocation": data.get("allocation"),
+        "market_context": data.get("market_context"),
+        "winning_trade_hints": data.get("winning_trade_hints"),
     }
 
 
@@ -4270,7 +4608,7 @@ async def start_existing_bot(bot_id: str, payload: dict = None, db: Session = De
 
     payload = payload or {}
     cfg = dict(bot_entry.config or {})
-    if _is_live_mainnet_config(cfg):
+    if is_live_mainnet_config(cfg):
         bypass_gate = bool(payload.get("force_start_live", False))
         if (not _analysis_gate_ok(cfg)) and (not bypass_gate):
             raise HTTPException(
@@ -4290,6 +4628,112 @@ async def start_existing_bot(bot_id: str, payload: dict = None, db: Session = De
             detail="No se pudo iniciar el bot (p. ej. ya está en ejecución). Recarga la lista de bots.",
         )
     return {"message": f"Bot {bot_id} started"}
+
+
+@app.post("/api/integrations/telegram/webhook")
+async def telegram_webhook(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """
+    Control básico por Telegram para producción autónoma.
+    Comandos soportados:
+    - /status
+    - /prod_on
+    - /prod_off
+    - /start_bot <BOT_ID>
+    - /stop_bot <BOT_ID>
+    """
+    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if not verify_telegram_secret(secret):
+        raise HTTPException(status_code=401, detail="Invalid telegram webhook secret")
+
+    text, chat_id = parse_telegram_update_text(payload or {})
+    if not text:
+        return {"ok": True, "message": "empty_update"}
+
+    allowed_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if allowed_chat and chat_id and chat_id != allowed_chat:
+        return {"ok": True, "message": "chat_not_allowed"}
+
+    parts = text.split()
+    cmd = parts[0].lower().strip()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    async def _prod_candidates():
+        rows = db.query(BotDB).filter(BotDB.is_archived == False).all()
+        selected = []
+        for bot in rows:
+            cfg = dict(bot.config or {})
+            if not is_live_mainnet_config(cfg):
+                continue
+            if not _analysis_gate_ok(cfg):
+                continue
+            selected.append(bot)
+        return selected
+
+    if cmd == "/status":
+        running = db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).count()
+        live_open = db.query(PositionDB).filter(PositionDB.is_open == True).count()
+        send_telegram_message(
+            f"STATUS\nrunning_bots: {running}\nopen_positions: {live_open}\nauto_promote_enabled: {_auto_production_promotion_enabled}"
+        )
+        return {"ok": True, "message": "status_sent"}
+
+    if cmd == "/start_bot" and arg:
+        await start_existing_bot(arg, payload={"force_start_live": False}, db=db)
+        send_telegram_message(f"BOT_STARTED\nbot_id: {arg}")
+        notify_event("REMOTE_COMMAND", {"channel": "telegram", "command": cmd, "bot_id": arg})
+        return {"ok": True, "message": "started", "bot_id": arg}
+
+    if cmd == "/stop_bot" and arg:
+        stopped_ok = bot_manager.stop_bot(arg)
+        if stopped_ok:
+            row = db.query(BotDB).filter(BotDB.id == arg).first()
+            if row:
+                row.status = "stopped"
+                db.commit()
+        send_telegram_message(f"BOT_STOPPED\nbot_id: {arg}")
+        notify_event("REMOTE_COMMAND", {"channel": "telegram", "command": cmd, "bot_id": arg})
+        return {"ok": True, "message": "stopped", "bot_id": arg}
+
+    if cmd == "/prod_on":
+        candidates = await _prod_candidates()
+        started = []
+        for bot in candidates:
+            if bot.id in bot_manager.active_bots:
+                continue
+            try:
+                await start_existing_bot(bot.id, payload={"force_start_live": False}, db=db)
+                started.append(bot.id)
+            except Exception:
+                continue
+            if len(started) >= 2:
+                break
+        send_telegram_message(
+            "PROD_ON\nstarted: " + (", ".join(started) if started else "none")
+        )
+        notify_event("REMOTE_COMMAND", {"channel": "telegram", "command": cmd, "started": started})
+        return {"ok": True, "message": "prod_on", "started": started}
+
+    if cmd == "/prod_off":
+        running_live = db.query(BotDB).filter(BotDB.status == "running", BotDB.is_archived == False).all()
+        stopped = []
+        for bot in running_live:
+            cfg = dict(bot.config or {})
+            if not is_live_mainnet_config(cfg):
+                continue
+            if bot_manager.stop_bot(bot.id):
+                bot.status = "stopped"
+                stopped.append(bot.id)
+        db.commit()
+        send_telegram_message(
+            "PROD_OFF\nstopped: " + (", ".join(stopped) if stopped else "none")
+        )
+        notify_event("REMOTE_COMMAND", {"channel": "telegram", "command": cmd, "stopped": stopped})
+        return {"ok": True, "message": "prod_off", "stopped": stopped}
+
+    send_telegram_message(
+        "Comando no reconocido.\nUsa: /status, /prod_on, /prod_off, /start_bot <id>, /stop_bot <id>"
+    )
+    return {"ok": True, "message": "unknown_command"}
 
 @app.get("/api/trades")
 async def list_trades(db: Session = Depends(get_db)):
