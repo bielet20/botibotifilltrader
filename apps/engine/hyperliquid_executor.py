@@ -222,6 +222,16 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 fee_cost = float(order.get('fee', {}).get('cost') or 0.0)
             elif isinstance(order.get('fees'), list):
                 fee_cost = float(sum((f or {}).get('cost', 0.0) for f in order.get('fees', [])))
+            # Algunas respuestas de Hyperliquid/CCXT no incluyen el fee.
+            # En ese caso, estimamos con la fee taker configurada para que:
+            # - trade.fee se persista correctamente
+            # - ProductionGuard calcule net_pnl/consecutive_losses de forma fiable
+            if fee_cost <= 0.0:
+                try:
+                    taker_fee_pct = float(os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00045") or "0.00045")
+                except Exception:
+                    taker_fee_pct = 0.00045
+                fee_cost = float(price) * float(amount) * taker_fee_pct
             
             # Extraer info del resultado de CCXT
             # Nota: Hyperliquid a veces devuelve None en algunos campos

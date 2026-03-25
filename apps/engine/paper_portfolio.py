@@ -1,6 +1,6 @@
 from typing import Dict, Optional
 from datetime import datetime
-from apps.shared.models import ExecutionResult, TradeSide
+from apps.shared.models import ExecutionResult, TradeSide, PositionDB
 from apps.shared.database import SessionLocal
 from sqlalchemy import Column, String, Float, JSON, DateTime
 from apps.shared.database import Base
@@ -58,6 +58,76 @@ class PaperTradingPortfolio:
             self.realized_pnl = portfolio.realized_pnl
             self.saved_profits = portfolio.saved_profits or 0.0
             self.savings_ratio = portfolio.savings_ratio or 0.2
+
+            # Mantener compatibilidad: el resto del sistema (UI/guards/position sync)
+            # lee `trading.db.positions`, así que sincronizamos las posiciones abiertas
+            # actuales del portfolio paper al inicializar.
+            self._sync_positions_to_position_db()
+
+    def _sync_positions_to_position_db(self) -> None:
+        with SessionLocal() as db:
+            open_symbols = set(self.positions.keys())
+
+            # 1) Upsert de posiciones abiertas según PaperTradingPortfolio
+            for symbol, payload in (self.positions or {}).items():
+                amount = float(payload.get("amount") or 0.0)
+                if amount <= 0:
+                    continue
+
+                entry_price = float(payload.get("avg_price") or 0.0)
+                side = str(payload.get("side") or "long").lower()
+                mark_price = float(payload.get("mark_price") or entry_price or 0.0)
+
+                if entry_price <= 0:
+                    continue
+
+                unrealized_pnl = (
+                    (mark_price - entry_price) * amount
+                    if side != "short"
+                    else (entry_price - mark_price) * amount
+                )
+
+                existing_pos = db.query(PositionDB).filter(
+                    PositionDB.bot_id == self.bot_id,
+                    PositionDB.symbol == symbol,
+                ).first()
+
+                if existing_pos:
+                    existing_pos.side = side
+                    existing_pos.entry_price = entry_price
+                    existing_pos.quantity = amount
+                    existing_pos.current_price = mark_price
+                    existing_pos.unrealized_pnl = unrealized_pnl
+                    existing_pos.is_open = True
+                    existing_pos.updated_at = datetime.utcnow()
+                else:
+                    new_pos = PositionDB(
+                        bot_id=self.bot_id,
+                        symbol=symbol,
+                        side=side,
+                        entry_price=entry_price,
+                        quantity=amount,
+                        leverage=1.0,
+                        current_price=mark_price,
+                        unrealized_pnl=unrealized_pnl,
+                        fee_paid=0.0,
+                        is_open=True,
+                        meta={"source": "paper_portfolio_init"},
+                    )
+                    db.add(new_pos)
+
+            # 2) Cerrar posiciones abiertas en PositionDB que ya no existan en el portfolio
+            stale_open = db.query(PositionDB).filter(
+                PositionDB.bot_id == self.bot_id,
+                PositionDB.is_open == True,
+            ).all()
+            for pos in stale_open:
+                if pos.symbol not in open_symbols:
+                    pos.is_open = False
+                    pos.quantity = 0.0
+                    pos.updated_at = datetime.utcnow()
+
+            db.commit()
     
     def _normalize_positions(self, positions: Dict) -> Dict:
         normalized = {}

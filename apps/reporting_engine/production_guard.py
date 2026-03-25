@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 
 from apps.shared.database import SessionLocal
 from apps.shared.models import BotDB, TradeDB, BotAlertDB, OrderLogDB, PositionDB
+from apps.engine.production_policy import is_live_mainnet_config
 
 
 class ProductionGuardService:
@@ -67,11 +68,7 @@ class ProductionGuardService:
         }
 
     def _is_live_mainnet(self, bot: BotDB) -> bool:
-        cfg = dict(bot.config or {})
-        executor = str(cfg.get("executor") or "paper").strip().lower()
-        if executor != "hyperliquid":
-            return False
-        return not bool(cfg.get("hyperliquid_testnet", True))
+        return is_live_mainnet_config(dict(bot.config or {}))
 
     def _calc_metrics(self, trades: List[TradeDB]) -> Dict[str, Any]:
         total = len(trades)
@@ -85,15 +82,17 @@ class ProductionGuardService:
                 "last_trade_at": None,
             }
 
-        wins = sum(1 for t in trades if (t.pnl or 0) > 0)
-        net_pnl = sum((t.pnl or 0) - (t.fee or 0) for t in trades)
-        gross_profit = sum(max(float(t.pnl or 0), 0.0) for t in trades)
-        gross_loss = sum(abs(min(float(t.pnl or 0), 0.0)) for t in trades)
+        # Métricas neto-aware: el objetivo es net_pnl positivo (p&l - comisiones).
+        net_values = [(float(t.pnl or 0.0) - float(t.fee or 0.0)) for t in trades]
+        wins = sum(1 for n in net_values if n > 0)
+        net_pnl = sum(net_values)
+        gross_profit = sum(max(n, 0.0) for n in net_values)
+        gross_loss = sum(abs(min(n, 0.0)) for n in net_values)
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
 
         consecutive_losses = 0
-        for trade in trades:
-            if (trade.pnl or 0) <= 0:
+        for n in net_values:
+            if n <= 0:
                 consecutive_losses += 1
             else:
                 break

@@ -100,20 +100,30 @@ class PositionSyncService:
                             break
                     
                     if existing_pos and bot_id != "ORPHAN":
-                        # Reassign position to correct bot
-                        old_bot_id = existing_pos.bot_id
-                        existing_pos.bot_id = bot_id
+                        # Regla de seguridad (producción):
+                        # No reasignar una posición ya asociada a un bot específico salvo que sea claramente huérfana
+                        # o que el bot original ya no exista/esté archivado. Esto evita "robar" posiciones entre bots
+                        # parados, algo peligroso en live.
+                        old_bot_id = str(existing_pos.bot_id or "").strip()
+                        old_bot = db.query(BotDB).filter(BotDB.id == old_bot_id).first() if old_bot_id else None
+                        old_is_orphan = (old_bot_id == "ORPHAN")
+                        old_missing_or_archived = (old_bot is None) or bool(getattr(old_bot, "is_archived", False))
+
+                        if old_is_orphan or old_missing_or_archived:
+                            existing_pos.bot_id = bot_id
+                            if not existing_pos.meta:
+                                existing_pos.meta = {}
+                            existing_pos.meta['reassigned_from'] = old_bot_id or "UNKNOWN"
+                            existing_pos.meta['reassigned_at'] = datetime.utcnow().isoformat()
+                            print(f"[PositionSync] Reassigned position {symbol} from {old_bot_id} to {bot_id}")
+
+                        # Siempre actualizamos el mark/pnl/cantidad aunque NO reasignemos.
                         existing_pos.current_price = ex_pos['current_price']
                         existing_pos.unrealized_pnl = ex_pos['unrealized_pnl']
                         existing_pos.quantity = ex_pos['quantity']
                         existing_pos.leverage = ex_pos.get('leverage', 1.0)
                         existing_pos.updated_at = datetime.utcnow()
-                        if not existing_pos.meta:
-                            existing_pos.meta = {}
-                        existing_pos.meta['reassigned_from'] = old_bot_id
-                        existing_pos.meta['reassigned_at'] = datetime.utcnow().isoformat()
                         results["synchronized"] += 1
-                        print(f"[PositionSync] Reassigned position {symbol} from {old_bot_id} to {bot_id}")
                     elif existing_pos and bot_id == "ORPHAN":
                         # Position exists but no matching bot found
                         existing_pos.current_price = ex_pos['current_price']

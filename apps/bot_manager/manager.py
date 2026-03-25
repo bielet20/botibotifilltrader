@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from typing import Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import os
 import math
@@ -14,6 +14,7 @@ from apps.engine.market_data import MarketDataEngine
 from apps.engine.paper_executor import PaperTradingExecutor
 from apps.engine.paper_portfolio import PaperTradingPortfolio
 from apps.engine.risk import RiskEngine
+from apps.engine.production_policy import is_live_mainnet_config
 from apps.ai_engine.engine import AIEngine
 from apps.shared.database import SessionLocal
 from apps.shared.models import BotDB, TradeDB, BotStatus, TradeSide, OrderLogDB, PositionDB, BotLearningStateDB, TradeSignal
@@ -53,7 +54,11 @@ class BotInstance:
             upper = float(config.get("upper_limit", 70000))
             lower = float(config.get("lower_limit", 60000))
             grids = int(config.get("num_grids", 10))
+            seed_entry = bool(config.get("grid_seed_entry", False))
             self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
+            # Enable optional initial entry on first iteration.
+            if seed_entry:
+                self.strategy.seed_entry = True
         elif "adaptive_learning" in strategy_name.lower() or "arbitrario" in strategy_name.lower():
             from apps.engine.adaptive_learning import AdaptiveLearningStrategy
             short_window = int(config.get("adaptive_short_window", 12))
@@ -113,7 +118,21 @@ class BotInstance:
             entry_price = float(payload.get("avg_price") or 0.0)
             side = str(payload.get("side") or "long").lower()
             if amount <= 0 or entry_price <= 0:
-                return None
+                # Fallback: el estado del portfolio en paper puede quedarse atrás.
+                # Para que el guard de comisiones/profit neto funcione, leemos PositionDB.
+                with SessionLocal() as db:
+                    pos = db.query(PositionDB).filter(
+                        PositionDB.bot_id == self.bot_id,
+                        PositionDB.symbol == symbol,
+                        PositionDB.is_open == True,
+                    ).first()
+                    if not pos:
+                        return None
+                    amount = float(pos.quantity or 0.0)
+                    entry_price = float(pos.entry_price or 0.0)
+                    side = str(pos.side or "long").lower()
+                    if amount <= 0 or entry_price <= 0:
+                        return None
         else:
             with SessionLocal() as db:
                 pos = db.query(PositionDB).filter(
@@ -145,18 +164,15 @@ class BotInstance:
         }
 
     def _is_live_mainnet_executor(self) -> bool:
-        executor = str(self.config.get("executor") or "paper").strip().lower()
-        is_testnet = _to_bool(self.config.get("hyperliquid_testnet"), default=False)
-        return executor == "hyperliquid" and (not is_testnet)
+        return is_live_mainnet_config(self.config)
 
     def _live_execution_guard(self, signal, symbol: str, last_price: float) -> tuple[bool, str]:
         """
-        Evita churn en live:
+        Evita churn:
         - no cerrar en zona gris (ni suficiente profit neto ni pérdida relevante)
         - no reentrar demasiado rápido o sin desplazamiento real de precio
         """
-        if not self._is_live_mainnet_executor():
-            return True, ""
+        is_live = self._is_live_mainnet_executor()
         if not bool(self.config.get("live_execution_guard_enabled", True)):
             return True, ""
         if signal.side == TradeSide.HOLD:
@@ -168,7 +184,16 @@ class BotInstance:
         min_reentry_move_pct = float(self.config.get("live_min_reentry_move_pct", 0.001) or 0.001)
         min_close_profit_pct = float(self.config.get("live_min_close_profit_pct", 0.0012) or 0.0012)
         force_close_loss_pct = float(self.config.get("live_force_close_loss_pct", 0.0035) or 0.0035)
-        taker_fee_pct = float(self.config.get("live_taker_fee_pct", os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00045")) or 0.00045)
+        if is_live:
+            taker_fee_pct = float(
+                self.config.get(
+                    "live_taker_fee_pct",
+                    os.getenv("HYPERLIQUID_TAKER_FEE_PCT", "0.00045"),
+                ) or 0.00045
+            )
+        else:
+            # Paper: usar el fee configurado por el executor (0.001 por defecto).
+            taker_fee_pct = float(self.config.get("paper_taker_fee_pct", getattr(self.executor, "fee_rate", 0.001)) or 0.001)
         min_profit_from_costs = max((2.0 * taker_fee_pct) + 0.00035, min_close_profit_pct)
 
         last_exec_at = float(state.get("last_exec_at", 0.0) or 0.0)
@@ -203,6 +228,18 @@ class BotInstance:
                 profit_pct = float(snapshot.get("profit_pct", 0.0) or 0.0)
                 in_gray_zone = (-force_close_loss_pct < profit_pct < min_profit_from_costs)
                 if in_gray_zone:
+                    if is_live:
+                        # Con long en pérdida pequeña y contexto del copiloto bajista, cerrar para no "sangrar"
+                        # (en perpetuos esto libera margen; un short nuevo es la siguiente señal, no cobertura simultánea).
+                        ctx = dict(self.config.get("autopilot_last_context") or {})
+                        trend_pct_ctx = float(ctx.get("trend_pct", 0.0) or 0.0)
+                        override = float(self.config.get("live_regime_close_override_trend_pct", -0.32) or -0.32)
+                        if side == "long" and trend_pct_ctx <= override:
+                            return True, (
+                                f"regime_override_bearish_close trend_pct={round(trend_pct_ctx, 4)} "
+                                f"profit_pct={round(profit_pct, 6)}"
+                            )
+
                     return False, (
                         f"close_guard_gray_zone profit_pct={round(profit_pct, 6)} "
                         f"(min_close={round(min_profit_from_costs, 6)}, force_loss={round(force_close_loss_pct, 6)})"
@@ -241,9 +278,7 @@ class BotInstance:
         if not only_production:
             return True
 
-        executor = str(self.config.get("executor") or "paper").strip().lower()
-        is_live_mainnet = executor == "hyperliquid" and (not _to_bool(self.config.get("hyperliquid_testnet"), default=False))
-        if not is_live_mainnet:
+        if not self._is_live_mainnet_executor():
             return False
 
         prepared = bool(
@@ -365,6 +400,50 @@ class BotInstance:
             "ema_min_slope_pct",
             float(os.getenv("EMA_MIN_SLOPE_PCT", "0.00015") or 0.00015),
         )
+        self.config.setdefault("live_regime_close_override_trend_pct", -0.32)
+
+    def _sync_hot_config_from_db(self):
+        """El orquestador actualiza BotDB.config (copiloto); el loop del bot debe leer esos campos."""
+        keys = (
+            "allow_short",
+            "autopilot_last_context",
+            "live_force_close_loss_pct",
+            "live_min_trade_interval_sec",
+            "live_min_close_profit_pct",
+            "live_min_reentry_move_pct",
+            "trade_amount",
+            "amount",
+            "capital_allocation",
+            "allocation",
+            "leverage",
+            "autopilot_capture_mode",
+            "ema_min_spread_pct",
+            "ema_min_slope_pct",
+            "autopilot_probe_active",
+            "autopilot_probe_until_ts",
+            "autopilot_flat_since_ts",
+            "autopilot_probe_reason",
+            "autopilot_micro_entry_enabled",
+            "autopilot_scaling_factor",
+            "autopilot_scaling_reason",
+            "risk_config",
+            "live_regime_close_override_trend_pct",
+            "loop_interval_sec",
+            "copilot_idle_throttle",
+            "copilot_idle_throttle_reason",
+            "copilot_minimize_losses_priority",
+        )
+        try:
+            with SessionLocal() as db:
+                row = db.query(BotDB).filter(BotDB.id == self.bot_id).first()
+                if not row or not row.config:
+                    return
+                cfg = dict(row.config or {})
+                for key in keys:
+                    if key in cfg:
+                        self.config[key] = cfg[key]
+        except Exception as exc:
+            print(f"[{self.bot_id}] hot config sync skipped: {exc}")
 
     def _load_learning_state(self, symbol: str):
         with SessionLocal() as db:
@@ -555,7 +634,10 @@ class BotInstance:
             upper = float(self.config.get("upper_limit", 70000))
             lower = float(self.config.get("lower_limit", 60000))
             grids = int(self.config.get("num_grids", 10))
+            seed_entry = bool(self.config.get("grid_seed_entry", False))
             self.strategy = GridTradingStrategy(upper_limit=upper, lower_limit=lower, num_grids=grids)
+            if seed_entry:
+                self.strategy.seed_entry = True
         elif "adaptive_learning" in strategy_name.lower() or "arbitrario" in strategy_name.lower():
             short_window = int(self.config.get("adaptive_short_window", 12))
             long_window = int(self.config.get("adaptive_long_window", 48))
@@ -585,8 +667,21 @@ class BotInstance:
         print(f"[BotInstance] Bot {self.bot_id} reconfigured with new parameters.")
 
     async def _execute_and_persist_signal(self, signal, strategy_name: str, executor_type: str, allow_short: bool = False):
+        # Mainnet real: solo operar si antes hubo validación en paper (buenos resultados / gate).
+        if str(executor_type or "").lower() == "hyperliquid" and os.getenv(
+            "REQUIRE_PAPER_VALIDATION_FOR_LIVE_MAINNET", ""
+        ).lower() in {"1", "true", "yes", "on"}:
+            if is_live_mainnet_config(self.config) and not bool(self.config.get("paper_validation_passed")):
+                print(
+                    f"[{self.bot_id}] Mainnet bloqueado: activa paper_validation_passed "
+                    f"tras resultados válidos en paper (o desactiva REQUIRE_PAPER_VALIDATION_FOR_LIVE_MAINNET)."
+                )
+                return False, 0.0, 0.0
+
         execution = await self.executor.execute(signal)
         if execution.status == "failed":
+            oid = str(getattr(execution, "order_id", "") or "")
+            detail = f"executor_failed:{oid}" if oid else "executor_failed"
             return False, 0.0, 0.0
 
         fee_amount = 0.0
@@ -615,11 +710,73 @@ class BotInstance:
                         meta=signal.meta,
                     )
                     db.add(trade_entry)
+
+                    # En paper el estado real lo tiene PaperTradingPortfolio.
+                    # Persistimos en PositionDB para que el dashboard/guards tengan visibilidad
+                    # consistente (y no dependan de un estado antiguo).
+                    pos_payload = dict((self.portfolio.positions or {}).get(signal.symbol) or {})
+                    amount = float(pos_payload.get("amount") or 0.0)
+                    side = str(pos_payload.get("side") or "long").lower()
+                    entry_price = float(pos_payload.get("avg_price") or 0.0)
+                    mark_price = float(pos_payload.get("mark_price") or entry_price or 0.0)
+
+                    if amount > 0:
+                        unrealized_pnl = (
+                            (mark_price - entry_price) * amount
+                            if side != "short"
+                            else (entry_price - mark_price) * amount
+                        )
+
+                        existing_pos = db.query(PositionDB).filter(
+                            PositionDB.bot_id == self.bot_id,
+                            PositionDB.symbol == signal.symbol,
+                        ).first()
+
+                        if existing_pos:
+                            existing_pos.side = side
+                            existing_pos.entry_price = entry_price
+                            existing_pos.quantity = amount
+                            existing_pos.current_price = mark_price
+                            existing_pos.unrealized_pnl = unrealized_pnl
+                            existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                            existing_pos.is_open = True
+                        else:
+                            new_pos = PositionDB(
+                                bot_id=self.bot_id,
+                                symbol=signal.symbol,
+                                side=side,
+                                entry_price=entry_price,
+                                quantity=amount,
+                                leverage=float(self.config.get("leverage", 1.0) or 1.0),
+                                current_price=mark_price,
+                                unrealized_pnl=unrealized_pnl,
+                                fee_paid=fee_amount,
+                                is_open=True,
+                                meta={"source": "paper_portfolio_sync"},
+                            )
+                            db.add(new_pos)
+                    else:
+                        # Cerrado: si había una posición abierta, marcarla como cerrada
+                        existing_pos = db.query(PositionDB).filter(
+                            PositionDB.bot_id == self.bot_id,
+                            PositionDB.symbol == signal.symbol,
+                            PositionDB.is_open == True,
+                        ).first()
+                        if existing_pos:
+                            existing_pos.is_open = False
+                            existing_pos.quantity = 0
+                            existing_pos.current_price = float(execution.avg_price or 0.0)
+                            existing_pos.unrealized_pnl = pnl_amount
+                            existing_pos.fee_paid = (existing_pos.fee_paid or 0) + fee_amount
+                            existing_pos.updated_at = datetime.utcnow()
+
                     db.commit()
                 print(f"[{self.bot_id}] Trade: {signal.side} {signal.symbol} | P&L: ${pnl_amount:.2f}")
             else:
                 execution_accepted = False
-                print(f"[{self.bot_id}] Trade rejected by portfolio: {portfolio_update.get('reason')}")
+                pr = portfolio_update.get("reason")
+                print(f"[{self.bot_id}] Trade rejected by portfolio: {pr}")
+                return False, 0.0, 0.0
         else:
             fee_amount = float(getattr(execution, 'fee', 0.0) or 0.0)
             pnl_amount = 0.0
@@ -973,6 +1130,7 @@ class BotInstance:
                 return
 
             while self.status == BotStatus.RUNNING:
+                self._sync_hot_config_from_db()
                 symbol = self.config.get("symbol", "BTC/USDT")
                 executor_type = str(self.config.get("executor", "paper") or "paper").lower()
                 default_loop_sleep = 20.0 if executor_type == "hyperliquid" else 10.0
@@ -983,6 +1141,20 @@ class BotInstance:
 
                 if self.portfolio is not None and last_price:
                     self.portfolio.update_market_prices({symbol: float(last_price)})
+
+                portfolio_for_strategy = self.portfolio.get_summary() if self.portfolio else {}
+                if self.portfolio is None and last_price:
+                    snap_pf = self._position_snapshot(symbol, float(last_price or 0.0))
+                    if snap_pf:
+                        portfolio_for_strategy = {
+                            "positions": {
+                                symbol: {
+                                    "amount": float(snap_pf.get("amount") or 0.0),
+                                    "side": str(snap_pf.get("side") or "long"),
+                                    "avg_price": float(snap_pf.get("entry_price") or 0.0),
+                                }
+                            }
+                        }
                 
                 # Fetch history for technical analysis if needed
                 history = await self.mde.fetch_ohlcv(symbol, limit=250)
@@ -993,7 +1165,7 @@ class BotInstance:
                     'last_price': last_price, 
                     'symbol': symbol,
                     'history': history,
-                    'portfolio': self.portfolio.get_summary() if self.portfolio else {},
+                    'portfolio': portfolio_for_strategy,
                     'allocation': float(self.config.get('allocation', self.config.get('capital_allocation', 100.0)) or 100.0),
                     'adaptive_min_flip_move_pct': float(self.config.get('adaptive_min_flip_move_pct', 0.0012) or 0.0012),
                     'adaptive_min_reentry_move_pct': float(self.config.get('adaptive_min_reentry_move_pct', 0.0008) or 0.0008),
@@ -1001,6 +1173,8 @@ class BotInstance:
                     'adaptive_bootstrap_unlock_sec': float(self.config.get('adaptive_bootstrap_unlock_sec', 2700.0) or 2700.0),
                     'adaptive_bootstrap_probe_interval_sec': float(self.config.get('adaptive_bootstrap_probe_interval_sec', 1800.0) or 1800.0),
                     'learning_state': learning_state,
+                    'allow_short': bool(self.config.get('allow_short', False)),
+                    'autopilot_last_context': dict(self.config.get('autopilot_last_context') or {}),
                 })
 
                 updated_learning_state = (signal.meta or {}).get('learning_state') if getattr(signal, 'meta', None) else None
