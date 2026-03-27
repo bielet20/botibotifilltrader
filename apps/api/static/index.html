@@ -54,6 +54,10 @@
                     <i data-lucide="arrow-left-right"></i>
                     <span>Comparador</span>
                 </a>
+                <a href="#" class="nav-link" data-tab="market-adaptation">
+                    <i data-lucide="radar"></i>
+                    <span>Adaptación mercado</span>
+                </a>
                 <a href="#" class="nav-link" data-tab="backtesting">
                     <i data-lucide="history"></i>
                     <span>Backtesting</span>
@@ -86,6 +90,10 @@
                         style="margin-top:8px; display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #f59e0b; border-radius:999px; color:#f59e0b; font-size:0.74rem; font-weight:700; letter-spacing:0.02em; background: rgba(245, 158, 11, 0.10);">
                         COPILOTO TOTAL OFF
                     </div>
+                    <button id="toggleFocusModeBtn" class="glass"
+                        style="margin-top:10px; display:inline-flex; padding:6px 10px; font-size:0.72rem; border:1px solid rgba(255,255,255,0.25); color:var(--text-secondary);">
+                        MODO CLARO UI OFF
+                    </button>
                 </div>
 
                 <div class="dashboard-container">
@@ -154,15 +162,20 @@
                                         style="margin-bottom:10px; font-size:0.74rem; color: var(--text-secondary); border:1px solid rgba(56,189,248,0.35); border-radius:10px; padding:8px 10px; background: rgba(56,189,248,0.08); max-height:170px; overflow:auto;">
                                         Historial Copiloto: cargando decisiones...
                                     </div>
+                                    <div id="productionPipelinePanel"
+                                        style="margin-bottom:10px; font-size:0.72rem; color: var(--text-secondary); border:1px solid rgba(129,140,248,0.45); border-radius:10px; padding:8px 10px; background: rgba(99,102,241,0.08); line-height:1.45;">
+                                        <strong style="color:var(--text-secondary);">Producción (paper→mainnet):</strong>
+                                        <span style="color:var(--text-muted);">cargando estado…</span>
+                                    </div>
                                     <div id="intelligenceTopHelp"
                                         style="margin-bottom:10px; font-size:0.74rem; color: var(--text-muted); border:1px dashed rgba(255,255,255,0.18); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.01);">
                                         <strong style="color:var(--text-secondary);">Guía rápida:</strong>
-                                        <span>PROD = listo por guardrails.</span>
+                                        <span>PROD = gate estadístico OK en la ventana (no basta el checkbox “preparado”).</span>
                                         <span style="margin-left:8px;">MAINNET = score estratégico alto (requiere confirmación).</span>
                                         <span style="margin-left:8px;">Si no ves columnas, desplaza lateralmente la tabla.</span>
                                     </div>
                                     <div id="intelligenceTopSummary"
-                                        style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-bottom:12px;">
+                                        style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; margin-bottom:12px;">
                                         <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color: var(--text-muted);">Cargando...</div>
                                     </div>
                                     <div class="scrollable-table-container scrollable-table-container--large" style="border:1px solid rgba(255,255,255,0.06); border-radius:12px; min-height:420px;">
@@ -216,6 +229,49 @@
 
                             <div class="glass full-card">
                                 <div class="glass-header">
+                                    <div>
+                                        <h2>📈 Oportunidades de Entrada (con % efectividad)</h2>
+                                        <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                            En modo capital: paper estudia; la entrada automática solo si hay estadísticas claras (gate + efectividad). Real/mainnet tras validación en paper.
+                                        </p>
+                                    </div>
+                                    <div style="display:flex; gap:8px; align-items:center;">
+                                        <button id="refreshEntryOpportunitiesBtn" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">ACTUALIZAR</button>
+                                        <button id="autoExecuteEntryBtn" class="glass"
+                                            style="padding: 6px 12px; font-size: 0.72rem; border: 1px solid var(--accent-emerald); color: var(--accent-emerald);">AUTO-EJECUTAR SI OK</button>
+                                    </div>
+                                </div>
+                                <div class="glass-content" style="padding: 1rem 1.25rem;">
+                                    <div id="entryOpportunitiesSummary"
+                                        style="margin-bottom:10px; font-size:0.78rem; color: var(--text-secondary); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:8px 10px; background: rgba(255,255,255,0.02);">
+                                        Cargando oportunidades...
+                                    </div>
+                                    <div class="scrollable-table-container" style="border:1px solid rgba(255,255,255,0.06); border-radius:12px;">
+                                        <table class="institutional-table" style="margin:0; min-width: 900px;">
+                                            <thead>
+                                                <tr>
+                                                    <th>Bot</th>
+                                                    <th>Símbolo</th>
+                                                    <th>Estrategia</th>
+                                                    <th>% Efectividad</th>
+                                                    <th>Validación</th>
+                                                    <th>Gate stats</th>
+                                                    <th>Señal</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="entryOpportunitiesBody">
+                                                <tr>
+                                                    <td colspan="7" style="text-align:center; padding: 1rem; color: var(--text-muted);">Sin datos todavía.</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="glass full-card">
+                                <div class="glass-header">
                                     <h2>🧪 Resultados de Pruebas & Parámetros Recomendados</h2>
                                     <div style="display:flex; gap:8px; align-items:center;">
                                         <select id="testInsightsWindow" class="glass"
@@ -227,7 +283,8 @@
                                         <select id="testInsightsMinTrades" class="glass"
                                             style="padding: 6px 10px; font-size: 0.72rem; border: 1px solid var(--border-glass); color: var(--text-secondary); background: transparent; border-radius: 8px;">
                                             <option value="5">Min 5</option>
-                                            <option value="8" selected>Min 8</option>
+                                            <option value="6" selected>Min 6 (moderado)</option>
+                                            <option value="8">Min 8</option>
                                             <option value="12">Min 12</option>
                                         </select>
                                         <button id="refreshTestInsights" class="glass"
@@ -530,6 +587,143 @@
                                     style="width: 100%; height: 60px; background: var(--accent-blue); color: white; border: none; font-weight: 700; font-size: 1rem; letter-spacing: 0.1em; cursor: pointer;">EJECUTAR
                                     ANÁLISIS COMPARATIVO PROFUNDO</button>
                                 <div id="compareLastUpdate" style="margin-top: 8px; text-align: right; font-size: 0.75rem; color: var(--text-muted);">Última actualización: --:--:--</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- LABORATORIO ADAPTACIÓN MERCADO -->
+                    <section id="market-adaptation" class="tab-content">
+                        <div class="dashboard-grid">
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <div>
+                                        <h2>Laboratorio: mercado → bot</h2>
+                                        <p style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px;">
+                                            Analiza velas 1h, clasifica régimen (tendencia / lateral / volatilidad) y genera una
+                                            <strong>plantilla</strong> alineada. Puedes <strong>guardar el perfil</strong> en base de datos;
+                                            si se repite el mismo contexto (<em>fingerprint</em>), reutilízalo o crea un bot nuevo.
+                                        </p>
+                                    </div>
+                                    <i data-lucide="radar"></i>
+                                </div>
+                                <div class="glass-content" style="display: grid; gap: 1rem;">
+                                    <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;">
+                                        <div class="form-group" style="margin: 0; min-width: 160px;">
+                                            <label>Símbolo</label>
+                                            <input type="text" id="maSymbol" class="form-control" value="BTC/USDT"
+                                                placeholder="BTC/USDT">
+                                        </div>
+                                        <div class="form-group" style="margin: 0; min-width: 140px;">
+                                            <label>Ejecutor (al crear)</label>
+                                            <select id="maExecutor" class="form-control">
+                                                <option value="paper" selected>Paper</option>
+                                                <option value="hyperliquid">Hyperliquid</option>
+                                            </select>
+                                        </div>
+                                        <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;">
+                                            <input type="checkbox" id="maPersistSnapshot"> Guardar perfil en BD tras analizar
+                                        </label>
+                                        <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;">
+                                            <input type="checkbox" id="maAutoStart"> Arrancar bot tras crear (riesgo)
+                                        </label>
+                                    </div>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                                        <button type="button" id="maAnalyzeBtn" class="glass"
+                                            style="padding: 10px 18px; border: 1px solid var(--accent-blue); color: var(--accent-blue); font-weight: 600;">
+                                            Analizar mercado
+                                        </button>
+                                        <button type="button" id="maSpawnFreshBtn" class="glass"
+                                            style="padding: 10px 18px; border: 1px solid var(--accent-emerald); color: var(--accent-emerald); font-weight: 600;">
+                                            Crear bot desde análisis actual
+                                        </button>
+                                        <button type="button" id="maLoadProfilesBtn" class="glass"
+                                            style="padding: 10px 18px; border: 1px solid rgba(255,255,255,0.2); color: var(--text-secondary);">
+                                            Refrescar perfiles guardados
+                                        </button>
+                                    </div>
+                                    <div id="maStatus"
+                                        style="font-size: 0.8rem; color: var(--text-muted); min-height: 1.25rem;"></div>
+                                    <div
+                                        style="border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px; background: rgba(0,0,0,0.2); max-height: 320px; overflow: auto;">
+                                        <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;">Resultado del análisis (JSON)</div>
+                                        <pre id="maAnalyzeOut"
+                                            style="margin: 0; font-size: 0.72rem; white-space: pre-wrap; word-break: break-word; color: var(--text-secondary);">— Ejecuta «Analizar mercado» —</pre>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="glass full-card">
+                                <div class="glass-header">
+                                    <h2>Perfiles reutilizables</h2>
+                                    <i data-lucide="database"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <p style="font-size: 0.78rem; color: var(--text-secondary); margin: 0 0 10px 0;">
+                                        Misma combinación símbolo + régimen + buckets → mismo <code style="font-size:0.7rem;">fingerprint</code>.
+                                        «Match» incrementa contador al guardar o al crear desde perfil.
+                                    </p>
+                                    <div class="scrollable-table-container" style="max-height: 360px;">
+                                        <table class="institutional-table" style="margin: 0; font-size: 0.75rem;">
+                                            <thead>
+                                                <tr>
+                                                    <th>Creado</th>
+                                                    <th>Símbolo</th>
+                                                    <th>Régimen</th>
+                                                    <th>Estrategia</th>
+                                                    <th>Matches</th>
+                                                    <th>Último bot</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="maProfilesBody">
+                                                <tr>
+                                                    <td colspan="7" style="color: var(--text-muted);">Sin datos. Pulsa «Refrescar perfiles».</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="glass full-card" style="grid-column: 1 / -1;">
+                                <div class="glass-header">
+                                    <div>
+                                        <h2>Cola de revisión (orquestador + API)</h2>
+                                        <p style="color: var(--text-secondary); font-size: 0.74rem; margin-top: 4px;">
+                                            Cuando el mercado <strong>coincide con un perfil guardado</strong>, se crea una entrada <em>pending</em>.
+                                            <strong>Aceptar</strong> crea un bot solo en <strong>PAPER</strong> y <strong>STOPPED</strong> (sin mainnet automático).
+                                            El orquestador encola en cada <code style="font-size:0.68rem;">run_once</code> si
+                                            <code style="font-size:0.68rem;">MARKET_ADAPTATION_QUEUE_FROM_ORCHESTRATOR=true</code>.
+                                        </p>
+                                    </div>
+                                    <i data-lucide="list-checks"></i>
+                                </div>
+                                <div class="glass-content">
+                                    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                                        <button type="button" id="maRefreshQueueBtn" class="glass"
+                                            style="padding: 8px 14px; font-size: 0.75rem; border: 1px solid var(--accent-blue); color: var(--accent-blue);">
+                                            Refrescar cola
+                                        </button>
+                                    </div>
+                                    <div class="scrollable-table-container" style="max-height: 280px;">
+                                        <table class="institutional-table" style="margin: 0; font-size: 0.72rem;">
+                                            <thead>
+                                                <tr>
+                                                    <th>Alta</th>
+                                                    <th>Estado</th>
+                                                    <th>Origen</th>
+                                                    <th>Símbolo</th>
+                                                    <th>Estrategia</th>
+                                                    <th>FP</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="maQueueBody">
+                                                <tr>
+                                                    <td colspan="7" style="color: var(--text-muted);">Sin propuestas pendientes.</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -894,6 +1088,7 @@
                             </div>
                             <div class="form-group">
                                 <label>Análisis inteligente de asignación</label>
+                                <span style="display:block; font-size:0.72rem; color: var(--text-muted); margin-bottom:6px;">Incluye bloque <strong style="color:#facc15;">Historial ganador</strong> (PnL &gt; 0) y alineación con el régimen actual.</span>
                                 <button id="analyzeBotBtn" class="glass"
                                     style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue); background: transparent; padding: 10px;">ANALIZAR
                                     Y RECOMENDAR (CORTO/MEDIO/LARGO)</button>

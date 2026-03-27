@@ -4,9 +4,17 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from apps.engine.bot_advisor import build_bot_advice
+from apps.engine.production_policy import (
+    entry_params_ok_for_live,
+    is_live_mainnet_config,
+    is_verified_for_production,
+    resolve_monitoring_window_params,
+    score_autostart_from_monitoring_row,
+    score_rotation_managed_bot,
+)
 from apps.shared.database import SessionLocal
 from apps.shared.models import AutopilotDecisionLogDB, BotDB, PositionDB, TradeDB
 
@@ -54,6 +62,13 @@ class AdaptiveOrchestratorService:
         }
         if not self.mainnet_allowed_horizons:
             self.mainnet_allowed_horizons = {"medio", "largo"}
+        self.auto_start_best_candidate = os.getenv("ORCHESTRATOR_AUTO_START_BEST_BOT", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.monitoring_lookback_hours, self.monitoring_min_scored_trades = resolve_monitoring_window_params()
 
     @staticmethod
     def _utc_now() -> str:
@@ -237,6 +252,8 @@ class AdaptiveOrchestratorService:
                 "autopilot_micro_entry_enabled": True,
                 "autopilot_micro_entry_flat_wait_sec": 300.0,
                 "autopilot_micro_entry_duration_sec": 900.0,
+                # Prioridad: minimizar pérdidas y no gastar fees/API en actividad sin edge claro.
+                "copilot_minimize_losses_priority": True,
             }
         )
         risk_cfg = dict(patched.get("risk_config") or {})
@@ -252,6 +269,9 @@ class AdaptiveOrchestratorService:
         volatility = float(context.get("volatility_pct") or 0.0)
         trend_capture_ok = regime == "tendencia_estable" and trend_pct >= 1.0 and volatility <= 0.75
         defense_mode = trend_pct <= -1.4 or volatility >= 1.0
+        # Deriva adversa leve (p. ej. -0,4%): no esperar a -1,4% para defender capital y permitir shorts.
+        adverse_drift = (not trend_capture_ok) and (-1.4 < trend_pct <= -0.35)
+        bearish_pressure = (not trend_capture_ok) and (trend_pct <= -0.35)
 
         if trend_capture_ok:
             patched["ema_min_spread_pct"] = min(float(patched.get("ema_min_spread_pct") or 0.00018), 0.00012)
@@ -280,9 +300,24 @@ class AdaptiveOrchestratorService:
             risk_cfg = dict(patched.get("risk_config") or {})
             risk_cfg["max_drawdown"] = min(float(risk_cfg.get("max_drawdown") or th["risk_max_drawdown"]), 0.03)
             patched["risk_config"] = risk_cfg
+            patched["allow_short"] = True
             patched["autopilot_capture_mode"] = "capital_defense"
+        elif adverse_drift:
+            patched["live_force_close_loss_pct"] = min(float(patched.get("live_force_close_loss_pct") or 0.0030), 0.0028)
+            patched["live_min_trade_interval_sec"] = max(float(patched.get("live_min_trade_interval_sec") or 85.0), 95.0)
+            patched["allow_short"] = True
+            patched["autopilot_capture_mode"] = "adverse_drift"
         else:
-            patched["autopilot_capture_mode"] = "neutral"
+            # Neutral: sesgo según dirección del contexto (shorts en bajista, sin shorts en fuerte alcista).
+            if bearish_pressure:
+                patched["allow_short"] = True
+                patched["live_force_close_loss_pct"] = min(float(patched.get("live_force_close_loss_pct") or 0.0032), 0.0030)
+                patched["autopilot_capture_mode"] = "bearish_bias"
+            elif trend_pct >= 0.45:
+                patched["allow_short"] = False
+                patched["autopilot_capture_mode"] = "bullish_bias"
+            else:
+                patched["autopilot_capture_mode"] = "neutral"
         return patched
 
     @staticmethod
@@ -459,7 +494,8 @@ class AdaptiveOrchestratorService:
             # Temporary tactical mode: still protected, but less restrictive to avoid staying flat too long.
             risk_ok = (consecutive_losses <= 2) and (net_pnl >= -3.0) and (win_rate >= 25.0 or trade_count <= 6)
         else:
-            risk_ok = (consecutive_losses <= 1) and (net_pnl >= -2.5) and (win_rate >= 35.0 or trade_count <= 4)
+            # Más estricto: sin beneficio reciente razonable, no micro-sondas (ahorra fees y rate limits).
+            risk_ok = (consecutive_losses <= 1) and (net_pnl >= -1.8) and (win_rate >= 38.0 or trade_count <= 4)
 
         should_arm_probe = (
             (now_ts - flat_since_ts) >= flat_wait_sec
@@ -495,6 +531,52 @@ class AdaptiveOrchestratorService:
         patched["autopilot_probe_expires_in_sec"] = int(max(0.0, probe_until_ts - now_ts))
         return patched
 
+    def _apply_capital_preservation_throttle(
+        self,
+        config: Dict[str, Any],
+        metrics: Dict[str, float],
+        *,
+        open_positions_count: int,
+    ) -> Dict[str, Any]:
+        """
+        Si las métricas recientes no muestran beneficio claro, deja de generar micro-entradas
+        y espacia órdenes/consultas (menos churn, menos fees) hasta que mejore el edge.
+        """
+        patched = dict(config or {})
+        if not self._bool_cfg(patched.get("copilot_minimize_losses_priority"), default=True):
+            patched["copilot_idle_throttle"] = False
+            return patched
+
+        trade_count = int(metrics.get("trade_count", 0) or 0)
+        net_pnl = float(metrics.get("net_pnl", 0.0) or 0.0)
+        win_rate = float(metrics.get("win_rate", 0.0) or 0.0)
+        consecutive_losses = int(metrics.get("consecutive_losses", 0) or 0)
+
+        unprofitable = net_pnl < 0.0 and trade_count >= 4
+        weak_edge = trade_count >= 8 and win_rate < 42.0 and net_pnl < 3.0
+        loss_streak = consecutive_losses >= 2
+
+        if not (unprofitable or weak_edge or loss_streak):
+            patched["copilot_idle_throttle"] = False
+            return patched
+
+        patched["autopilot_micro_entry_enabled"] = False
+        patched["autopilot_probe_active"] = False
+        patched["autopilot_probe_until_ts"] = 0.0
+        patched["autopilot_probe_reason"] = "capital_preservation_no_micro_probe"
+        cur = float(patched.get("live_min_trade_interval_sec", 60.0) or 60.0)
+        patched["live_min_trade_interval_sec"] = max(cur, 95.0)
+        if open_positions_count <= 0:
+            loop_base = float(patched.get("loop_interval_sec", 20.0) or 20.0)
+            patched["loop_interval_sec"] = max(loop_base, 28.0)
+            patched["copilot_idle_throttle_reason"] = (
+                "unprofitable" if unprofitable else "weak_edge" if weak_edge else "loss_streak"
+            )
+        else:
+            patched["copilot_idle_throttle_reason"] = "metrics_weak_position_open"
+        patched["copilot_idle_throttle"] = True
+        return patched
+
     @staticmethod
     def _config_change_snapshot(before_cfg: Dict[str, Any], after_cfg: Dict[str, Any]) -> Dict[str, Any]:
         before = before_cfg or {}
@@ -516,6 +598,10 @@ class AdaptiveOrchestratorService:
             "autopilot_scaling_reason",
             "autopilot_probe_active",
             "autopilot_probe_reason",
+            "autopilot_micro_entry_enabled",
+            "loop_interval_sec",
+            "copilot_idle_throttle",
+            "copilot_idle_throttle_reason",
         ]
         out = {}
         for key in keys:
@@ -565,24 +651,6 @@ class AdaptiveOrchestratorService:
         if str(bot_id or "").upper().startswith("AUTO-ADAPT-"):
             return True
         return False
-
-    @staticmethod
-    def _is_live_mainnet_config(config: Dict[str, Any]) -> bool:
-        cfg = config or {}
-        executor = str(cfg.get("executor") or "paper").strip().lower()
-        if executor != "hyperliquid":
-            return False
-        return not bool(cfg.get("hyperliquid_testnet", True))
-
-    @staticmethod
-    def _is_verified_for_production(config: Dict[str, Any]) -> bool:
-        cfg = config or {}
-        return bool(
-            cfg.get("analysis_approved")
-            or cfg.get("candidate_for_production")
-            or cfg.get("production_ready")
-            or cfg.get("autoadapt_mainnet_candidate")
-        )
 
     @staticmethod
     def _parse_symbols(raw: str) -> List[str]:
@@ -688,6 +756,90 @@ class AdaptiveOrchestratorService:
     def _is_quarantined(cfg: Dict[str, Any]) -> bool:
         return str((cfg or {}).get("autonomy_status") or "").strip().lower() == "quarantined"
 
+    async def _maybe_autostart_best_production_candidate(
+        self,
+        db,
+        bot_map: Dict[str, Any],
+        trigger: str,
+        symbols: List[str],
+        market_context_by_symbol: Dict[str, Dict[str, Any]],
+        actions: List[Dict[str, Any]],
+        monitoring_snapshot: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Elige el bot parado con mejor puntuación entre los que pasan gate estadístico y
+        parámetros mínimos de entrada; arranca vía activación de producción (HL mainnet).
+        """
+        active_count = sum(1 for b in bot_map.values() if str(b.status or "").lower() == "running")
+        if active_count >= self.max_active_bots:
+            return {"skipped": True, "reason": "capacity"}
+
+        from apps.api.main import _activate_bot_for_production_internal, _build_monitoring_test_results
+
+        monitoring = monitoring_snapshot
+        if monitoring is None:
+            monitoring = _build_monitoring_test_results(
+                db, self.monitoring_lookback_hours, self.monitoring_min_scored_trades
+            )
+        candidates: List[tuple] = []
+        for item in monitoring.get("results", []):
+            bot_id = str(item.get("bot_id") or "").strip()
+            if not bot_id:
+                continue
+            entry = bot_map.get(bot_id)
+            if not entry:
+                continue
+            if str(entry.status or "").lower() == "running":
+                continue
+            readiness = dict(item.get("readiness") or {})
+            if not bool(readiness.get("gate_ok")):
+                continue
+            if not bool(item.get("candidate_for_production")):
+                continue
+            cfg = dict(entry.config or {})
+            if self._is_quarantined(cfg):
+                continue
+            if not is_live_mainnet_config(cfg):
+                continue
+            if not entry_params_ok_for_live(cfg):
+                continue
+            score = score_autostart_from_monitoring_row(cfg, item, symbols, market_context_by_symbol)
+            candidates.append((score, bot_id, item))
+
+        candidates.sort(reverse=True, key=lambda x: x[0])
+        if not candidates:
+            return {"skipped": True, "reason": "no_candidates", "candidates_evaluated": 0}
+
+        best_score, best_id, best_item = candidates[0]
+        result = await _activate_bot_for_production_internal(
+            db,
+            bot_id=best_id,
+            lookback_hours=self.monitoring_lookback_hours,
+            min_scored_trades=self.monitoring_min_scored_trades,
+            trigger=f"{trigger}:orchestrator_autostart_best",
+            monitoring_snapshot=monitoring,
+        )
+        if result.get("activated") and best_id in bot_map:
+            bot_map[best_id].status = "running"
+
+        actions.append(
+            {
+                "type": "autostart_best_production",
+                "bot_id": best_id,
+                "reason": "gate_ok_metrics_ranked",
+                "score": best_score,
+                "result": result,
+            }
+        )
+        return {
+            "skipped": False,
+            "bot_id": best_id,
+            "score": best_score,
+            "metrics": dict((best_item or {}).get("metrics") or {}),
+            "result": result,
+            "candidates_ranked": len(candidates),
+        }
+
     def _preserve_quarantine_fields(self, prev_cfg: Dict[str, Any], new_cfg: Dict[str, Any]) -> Dict[str, Any]:
         prev = dict(prev_cfg or {})
         cfg = dict(new_cfg or {})
@@ -697,6 +849,12 @@ class AdaptiveOrchestratorService:
         cfg["autonomy_status_reason"] = str(prev.get("autonomy_status_reason") or "unproductive_metrics")
         cfg["autonomy_status_since"] = prev.get("autonomy_status_since") or self._utc_now()
         return cfg
+
+    async def _market_adaptation_queue_tick(self, db, symbols: List[str], trigger: str) -> Dict[str, Any]:
+        """Encola propuestas de revisión si el mercado coincide con un perfil guardado (sin crear bots ni mainnet)."""
+        from apps.engine import market_adaptation_queue as maq
+
+        return await maq.orchestrator_tick(db, symbols, trigger=trigger)
 
     async def start(self):
         if self._running:
@@ -742,6 +900,8 @@ class AdaptiveOrchestratorService:
         recommendations_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
         market_context_by_symbol: Dict[str, Dict[str, Any]] = {}
         decision_logs: List[Dict[str, Any]] = []
+        autostart_report: Optional[Dict[str, Any]] = None
+        self._cycle_monitoring = None
         copilot_enabled = bool(self._copilot_total.get("enabled", False))
         copilot_profile = str(self._copilot_total.get("profile") or "balanced")
         attack_window_active = self._attack_window_active()
@@ -752,6 +912,7 @@ class AdaptiveOrchestratorService:
             except Exception:
                 pass
 
+        ma_queue_report: Dict[str, Any] = {}
         with SessionLocal() as db:
             bots = db.query(BotDB).filter(BotDB.is_archived == False).all()
             bot_map = {b.id: b for b in bots}
@@ -986,7 +1147,7 @@ class AdaptiveOrchestratorService:
             for entry in bot_map.values():
                 cfg = dict(entry.config or {})
                 is_managed = self._is_orchestrator_managed(entry.id, cfg)
-                is_live_mainnet = self._is_live_mainnet_config(cfg)
+                is_live_mainnet = is_live_mainnet_config(cfg)
                 if not is_managed and not is_live_mainnet:
                     continue
                 metrics = self._recent_metrics(db, entry.id)
@@ -1031,6 +1192,11 @@ class AdaptiveOrchestratorService:
                         open_positions_count=int(open_positions_count or 0),
                         attack_window_active=attack_window_active,
                     )
+                    patched_cfg = self._apply_capital_preservation_throttle(
+                        patched_cfg,
+                        metrics=metrics,
+                        open_positions_count=int(open_positions_count or 0),
+                    )
                     if patched_cfg != cfg:
                         changes = self._config_change_snapshot(cfg, patched_cfg)
                         reason_code = "copilot_tune"
@@ -1038,6 +1204,11 @@ class AdaptiveOrchestratorService:
                         if patched_cfg.get("autopilot_probe_active"):
                             reason_code = "micro_entry_probe"
                             reason_text = f"profile={copilot_profile}; probe={patched_cfg.get('autopilot_probe_reason') or 'active'}"
+                        elif patched_cfg.get("copilot_idle_throttle"):
+                            reason_code = "capital_preservation_idle"
+                            reason_text = (
+                                f"profile={copilot_profile}; throttle={patched_cfg.get('copilot_idle_throttle_reason') or 'active'}"
+                            )
                         elif str(patched_cfg.get("autopilot_scaling_reason") or "").strip():
                             reason_code = "capital_scaling"
                             reason_text = f"profile={copilot_profile}; scaling={patched_cfg.get('autopilot_scaling_reason')}"
@@ -1075,14 +1246,8 @@ class AdaptiveOrchestratorService:
             scored = []
             for b in running_managed:
                 m = self._recent_metrics(db, b.id)
-                score = (m.get("win_rate", 0.0) * 0.7) + (m.get("net_pnl", 0.0) * 0.1) - (m.get("consecutive_losses", 0) * 12)
                 cfg = dict(b.config or {})
-                if self._is_live_mainnet_config(cfg):
-                    score += 1000.0
-                if self._is_verified_for_production(cfg):
-                    score += 250.0
-                if str(cfg.get("executor") or "paper").strip().lower() == "paper":
-                    score -= 150.0
+                score = score_rotation_managed_bot(m, cfg)
                 scored.append((score, b.id, m))
 
             scored.sort(reverse=True, key=lambda x: x[0])
@@ -1093,12 +1258,19 @@ class AdaptiveOrchestratorService:
                     bot_map[bot_id].status = "stopped"
                 actions.append({"type": "stop", "bot_id": bot_id, "reason": "capacity_rotation"})
 
+            if self.max_active_bots > 0:
+                from apps.api.main import _build_monitoring_test_results
+
+                self._cycle_monitoring = _build_monitoring_test_results(
+                    db, self.monitoring_lookback_hours, self.monitoring_min_scored_trades
+                )
+
             live_verified = []
             for b in bot_map.values():
                 cfg = dict(b.config or {})
-                if not self._is_live_mainnet_config(cfg):
+                if not is_live_mainnet_config(cfg):
                     continue
-                if not self._is_verified_for_production(cfg):
+                if not is_verified_for_production(cfg):
                     continue
                 if self._is_quarantined(cfg):
                     actions.append(
@@ -1152,8 +1324,8 @@ class AdaptiveOrchestratorService:
                 b.id
                 for b in bot_map.values()
                 if str(b.status or "").lower() == "running"
-                and self._is_live_mainnet_config(dict(b.config or {}))
-                and self._is_verified_for_production(dict(b.config or {}))
+                and is_live_mainnet_config(dict(b.config or {}))
+                and is_verified_for_production(dict(b.config or {}))
                 and not self._is_quarantined(dict(b.config or {}))
             }
 
@@ -1163,7 +1335,7 @@ class AdaptiveOrchestratorService:
                     running_non_live = [
                         b for b in bot_map.values()
                         if str(b.status or "").lower() == "running"
-                        and not self._is_live_mainnet_config(dict(b.config or {}))
+                        and not is_live_mainnet_config(dict(b.config or {}))
                     ]
                     for b in running_non_live:
                         if active_count < self.max_active_bots:
@@ -1179,10 +1351,83 @@ class AdaptiveOrchestratorService:
                             float(preferred_cfg.get("capital_allocation") or 0.0)
                         )
                         preferred_live.config = preferred_cfg
-                        if self.bot_manager.start_bot(preferred_live.id, preferred_cfg):
+                        db.flush()
+                        from apps.api.main import _activate_bot_for_production_internal
+
+                        act_result = await _activate_bot_for_production_internal(
+                            db,
+                            bot_id=preferred_live.id,
+                            lookback_hours=self.monitoring_lookback_hours,
+                            min_scored_trades=self.monitoring_min_scored_trades,
+                            trigger=f"{trigger}:prefer_live_verified",
+                            monitoring_snapshot=self._cycle_monitoring,
+                        )
+                        if act_result.get("activated"):
                             preferred_live.status = "running"
                             active_count += 1
-                            actions.append({"type": "start", "bot_id": preferred_live.id, "reason": "prefer_live_verified"})
+                            actions.append(
+                                {
+                                    "type": "start",
+                                    "bot_id": preferred_live.id,
+                                    "reason": "prefer_live_verified",
+                                    "activation": act_result,
+                                }
+                            )
+                        else:
+                            actions.append(
+                                {
+                                    "type": "skip_start",
+                                    "bot_id": preferred_live.id,
+                                    "reason": "prefer_live_verified_activation_failed",
+                                    "detail": act_result,
+                                }
+                            )
+
+            active_count = sum(
+                1 for b in bot_map.values() if str(b.status or "").lower() == "running"
+            )
+            if self.auto_start_best_candidate:
+                if active_count < self.max_active_bots:
+                    autostart_report = await self._maybe_autostart_best_production_candidate(
+                        db,
+                        bot_map,
+                        trigger,
+                        symbols,
+                        market_context_by_symbol,
+                        actions,
+                        self._cycle_monitoring,
+                    )
+                else:
+                    autostart_report = {"skipped": True, "reason": "capacity"}
+
+            if autostart_report and autostart_report.get("result", {}).get("activated"):
+                _bid = str(autostart_report.get("bot_id") or "")
+                _be = bot_map.get(_bid)
+                _sym = (
+                    str((_be.config or {}).get("symbol") or "").upper() if _be else None
+                )
+                decision_logs.append(
+                    {
+                        "trigger": trigger,
+                        "bot_id": _bid,
+                        "symbol": _sym,
+                        "profile": copilot_profile,
+                        "reason_code": "autostart_best_production",
+                        "reason_text": "unified_policy_activation",
+                        "market_context": {},
+                        "metrics": dict(autostart_report.get("metrics") or {}),
+                        "changes": {},
+                        "extra": {
+                            "policy": "production_policy_v1",
+                            "score": autostart_report.get("score"),
+                        },
+                    }
+                )
+
+            try:
+                ma_queue_report = await self._market_adaptation_queue_tick(db, list(symbols), trigger)
+            except Exception as _ma_q_err:
+                ma_queue_report = {"skipped": True, "error": str(_ma_q_err)}
 
             if decision_logs:
                 for item in decision_logs:
@@ -1236,6 +1481,13 @@ class AdaptiveOrchestratorService:
             "mainnet_min_confidence": self.mainnet_min_confidence,
             "decision_logs_added": len(decision_logs),
             "copilot_total": self.copilot_total_status(),
+            "autostart_best_production_enabled": self.auto_start_best_candidate,
+            "autostart_best_production": autostart_report,
+            "monitoring_policy": {
+                "lookback_hours": self.monitoring_lookback_hours,
+                "min_scored_trades": self.monitoring_min_scored_trades,
+            },
+            "market_adaptation_queue": ma_queue_report,
         }
         self._last_report = report
         return report

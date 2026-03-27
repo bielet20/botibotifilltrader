@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuración inicial - AAA BOT TRADING</title>
+    <style>
+        :root {
+            --bg: #0b1020;
+            --card: #131c32;
+            --border: rgba(255, 255, 255, 0.14);
+            --text: #f2f5ff;
+            --muted: #9fb0d3;
+            --accent: #5ea0ff;
+            --danger: #ff6b6b;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            color: var(--text);
+            background: radial-gradient(circle at top, #17264d 0%, var(--bg) 52%, #070b15 100%);
+            padding: 20px;
+        }
+        .card {
+            width: min(760px, calc(100vw - 28px));
+            background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 22px;
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.38);
+        }
+        h1 { margin: 0 0 8px; font-size: 1.2rem; }
+        p { margin: 0 0 16px; color: var(--muted); font-size: 0.9rem; line-height: 1.45; }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .full { grid-column: 1 / -1; }
+        label { display: block; margin-bottom: 6px; font-size: 0.8rem; color: var(--muted); }
+        input {
+            width: 100%;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.03);
+            color: var(--text);
+            padding: 10px 12px;
+            outline: none;
+        }
+        input:focus { border-color: var(--accent); }
+        button {
+            margin-top: 8px;
+            width: 100%;
+            border: 0;
+            border-radius: 10px;
+            background: var(--accent);
+            color: white;
+            font-weight: 700;
+            padding: 11px 14px;
+            cursor: pointer;
+        }
+        .secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
+        .status { margin-top: 10px; min-height: 1.2rem; font-size: 0.84rem; color: var(--muted); }
+        .status.error { color: var(--danger); }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Configuración inicial obligatoria</h1>
+        <p>Completa estos datos una sola vez para habilitar acceso seguro, recuperación por email y backups descargables.</p>
+        <form id="setupForm" class="grid">
+            <div>
+                <label for="username">Usuario administrador</label>
+                <input id="username" required value="admin" />
+            </div>
+            <div>
+                <label for="recoveryEmail">Email de recuperación</label>
+                <input id="recoveryEmail" type="email" required placeholder="admin@tu-dominio.com" />
+            </div>
+            <div>
+                <label for="password">Contraseña (mínimo 10)</label>
+                <input id="password" type="password" required />
+            </div>
+            <div>
+                <label for="confirmPassword">Confirmar contraseña</label>
+                <input id="confirmPassword" type="password" required />
+            </div>
+
+            <div class="full"><p style="margin:6px 0 0; font-size:0.82rem;">SMTP para renovación de contraseña por email</p></div>
+
+            <div>
+                <label for="smtpHost">SMTP host</label>
+                <input id="smtpHost" required placeholder="smtp.tu-dominio.com" />
+            </div>
+            <div>
+                <label for="smtpPort">SMTP puerto</label>
+                <input id="smtpPort" type="number" required value="587" />
+            </div>
+            <div>
+                <label for="smtpUser">SMTP usuario</label>
+                <input id="smtpUser" placeholder="usuario@tu-dominio.com" />
+            </div>
+            <div>
+                <label for="smtpPass">SMTP contraseña</label>
+                <input id="smtpPass" type="password" />
+            </div>
+            <div class="full">
+                <label for="smtpFrom">Email remitente</label>
+                <input id="smtpFrom" type="email" required placeholder="noreply@tu-dominio.com" />
+            </div>
+
+            <div class="full">
+                <button id="testSmtpBtn" type="button" class="secondary">Probar SMTP primero</button>
+                <button id="submitBtn" type="submit">Guardar configuración inicial</button>
+                <div id="status" class="status"></div>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('setupForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const testSmtpBtn = document.getElementById('testSmtpBtn');
+        const statusBox = document.getElementById('status');
+        let smtpValidated = false;
+
+        function setStatus(msg, isError = false) {
+            statusBox.textContent = msg || '';
+            statusBox.className = `status${isError ? ' error' : ''}`;
+        }
+
+        function smtpPayload() {
+            return {
+                smtp_host: document.getElementById('smtpHost').value || '',
+                smtp_port: Number(document.getElementById('smtpPort').value || 587),
+                smtp_username: document.getElementById('smtpUser').value || '',
+                smtp_password: document.getElementById('smtpPass').value || '',
+                smtp_from_email: document.getElementById('smtpFrom').value || '',
+                smtp_use_tls: true,
+                smtp_use_ssl: false,
+                target_email: document.getElementById('recoveryEmail').value || ''
+            };
+        }
+
+        ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'recoveryEmail'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input', () => { smtpValidated = false; });
+        });
+
+        if (testSmtpBtn) {
+            testSmtpBtn.addEventListener('click', async () => {
+                setStatus('');
+                testSmtpBtn.disabled = true;
+                testSmtpBtn.textContent = 'Probando SMTP...';
+                try {
+                    const res = await fetch('/api/setup/smtp-test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(smtpPayload()),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                    smtpValidated = true;
+                    setStatus('SMTP validado correctamente. Ya puedes guardar configuración.');
+                } catch (err) {
+                    smtpValidated = false;
+                    setStatus(`Error SMTP: ${err.message || 'No se pudo validar'}`, true);
+                } finally {
+                    testSmtpBtn.disabled = false;
+                    testSmtpBtn.textContent = 'Probar SMTP primero';
+                }
+            });
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            setStatus('');
+            if (!smtpValidated) {
+                setStatus('Primero debes validar SMTP con "Probar SMTP primero".', true);
+                return;
+            }
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Guardando...';
+            const payload = {
+                username: document.getElementById('username').value || '',
+                password: document.getElementById('password').value || '',
+                confirm_password: document.getElementById('confirmPassword').value || '',
+                recovery_email: document.getElementById('recoveryEmail').value || '',
+                smtp_host: document.getElementById('smtpHost').value || '',
+                smtp_port: Number(document.getElementById('smtpPort').value || 587),
+                smtp_username: document.getElementById('smtpUser').value || '',
+                smtp_password: document.getElementById('smtpPass').value || '',
+                smtp_from_email: document.getElementById('smtpFrom').value || '',
+                smtp_use_tls: true,
+                smtp_use_ssl: false
+            };
+            try {
+                const res = await fetch('/api/setup/initialize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                setStatus('Configuración guardada. Redirigiendo al login...');
+                setTimeout(() => { window.location.href = '/login'; }, 900);
+            } catch (err) {
+                setStatus(`Error: ${err.message || 'No se pudo guardar'}`, true);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Guardar configuración inicial';
+            }
+        });
+    </script>
+</body>
+</html>

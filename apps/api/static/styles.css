@@ -77,12 +77,12 @@ body {
     background: var(--bg-card);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--border-glass);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--radius-lg);
-    box-shadow: 0 8px 32px -4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.45);
     transition: var(--transition-smooth);
     position: relative;
-    overflow: hidden;
+    overflow: visible;
     display: flex;
     flex-direction: column;
 }
@@ -93,7 +93,7 @@ body {
 }
 
 .glass-header {
-    padding: 1.25rem 1.75rem;
+    padding: 0.95rem 1.1rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     background: rgba(255, 255, 255, 0.02);
     display: flex;
@@ -111,7 +111,7 @@ body {
 }
 
 .glass-content {
-    padding: 1.75rem;
+    padding: 1rem 1.1rem;
     flex: 1;
 }
 
@@ -198,7 +198,7 @@ main {
     min-width: 0;
     background: radial-gradient(circle at top right, hsla(199, 89%, 60%, 0.03), transparent 40%),
         radial-gradient(circle at bottom left, hsla(160, 84%, 45%, 0.03), transparent 40%);
-    padding: 2.5rem;
+    padding: 1.25rem;
     scrollbar-gutter: stable;
 }
 
@@ -332,8 +332,8 @@ header {
 .dashboard-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    grid-template-rows: auto 400px auto;
-    gap: 1.5rem;
+    grid-template-rows: auto;
+    gap: 0.9rem;
 }
 
 .stat-card {
@@ -468,8 +468,7 @@ aside.collapsed .collapse-btn i {
 
 .glass-content {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: auto;
+    overflow: visible;
     padding: 1.5rem;
     scrollbar-width: thin;
     scrollbar-color: var(--accent-blue) transparent;
@@ -637,6 +636,39 @@ th {
     display: flex;
 }
 
+/* Reduce visual noise and nested scrolling */
+.focus-mode #copilotDecisionHistory,
+.focus-mode #intelligenceTopHelp,
+.focus-mode #botTrafficLightList,
+.focus-mode #testInsightsContent {
+    display: none !important;
+}
+
+.focus-mode .glass-header {
+    padding: 0.9rem 1.2rem;
+}
+
+.focus-mode .glass-content {
+    padding: 1rem 1.2rem;
+}
+
+/* Per-card collapsible sections */
+.section-collapse-btn {
+    margin-left: auto;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    font-size: 0.66rem;
+    letter-spacing: 0.03em;
+    padding: 5px 8px;
+    cursor: pointer;
+}
+
+.glass.is-collapsed .glass-content {
+    display: none !important;
+}
+
 .section-header {
     margin-bottom: 2rem;
 }
@@ -705,16 +737,50 @@ main.sidebar-collapsed {
 }
 
 .scrollable-table-container {
-    max-height: 400px;
+    max-height: 56vh;
     overflow-y: auto;
     padding-right: 8px;
 }
 
 .scrollable-table-container--large {
-    max-height: 58vh;
+    max-height: 64vh;
     overflow-y: auto;
     overflow-x: auto;
     padding-right: 8px;
+}
+
+/* Reduce framing and avoid clipping in overview cards */
+#overview #mainnetVisualHeader,
+#overview #mainnetVisualDetail,
+#overview #runtimeOpsOverviewStatus,
+#overview #copilotProbeStatus,
+#overview #copilotDecisionHistory,
+#overview #productionPipelinePanel,
+#overview #intelligenceTopHelp,
+#overview #botTrafficLightHeader,
+#overview #botTrafficLightList,
+#overview #entryOpportunitiesSummary {
+    border: none !important;
+    background: transparent !important;
+    padding: 4px 0 !important;
+    margin-bottom: 8px !important;
+}
+
+#overview #copilotDecisionHistory {
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* In overview prioritize one-page readability over nested scrolls */
+#overview .scrollable-table-container,
+#overview .scrollable-table-container--large {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+}
+
+#overview .institutional-table {
+    min-width: 860px;
 }
 
 .side-panel .glass:last-child {
@@ -923,6 +989,12 @@ tr:hover {
     .bot-list {
         grid-column: span 2;
     }
+
+    #overview #mainnetVisualGrid,
+    #overview #intelligenceTopSummary,
+    #overview #botTrafficLightSummary {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
 }
 
 /* Mobile Optimization */
@@ -1017,7 +1089,7 @@ tr:hover {
 
     main {
         width: 100%;
-        padding: 1rem;
+        padding: 0.85rem;
     }
 
     .content-container {
@@ -1036,7 +1108,7 @@ tr:hover {
     }
 
     .glass-content {
-        padding: 1rem;
+        padding: 0.85rem;
     }
 
     .section-info h1 {
@@ -1187,6 +1259,15 @@ select.form-control {
     letter-spacing: 0.08em;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     background: rgba(255, 255, 255, 0.02);
+}
+
+/* Avoid transparent overlap on sticky headers (entry opportunities and similar tables) */
+.institutional-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: #0b1220; /* solid, non-transparent */
+    backdrop-filter: none;
 }
 
 .institutional-table td {

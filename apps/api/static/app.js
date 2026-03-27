@@ -1,8 +1,11 @@
 // Dashboard Application Logic
 
 const LOCAL_API_ORIGIN = 'http://127.0.0.1:8000';
-const shouldUseLocalApiOrigin = !(window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
-    || window.location.port !== '8000';
+// Solo en dev: UI en localhost con puerto distinto de 8000 → API en 127.0.0.1:8000.
+// En producción (mismo origen que la API) usar rutas relativas /api/... sin forzar 127.0.0.1.
+const shouldUseLocalApiOrigin =
+    (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
+    && String(window.location.port || '') !== '8000';
 
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const originalFetch = window.fetch.bind(window);
@@ -49,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sectionTitle = document.getElementById('sectionTitle');
     const sectionSubtitle = document.getElementById('sectionSubtitle');
     const copilotTotalHeaderBadge = document.getElementById('copilotTotalHeaderBadge');
+    const toggleFocusModeBtn = document.getElementById('toggleFocusModeBtn');
     const sidebar = document.querySelector('.sidebar');
     const menuToggle = document.getElementById('menuToggle');
     const sidebarOverlay = document.getElementById('sidebarOverlay');
@@ -101,6 +105,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshTestInsights = document.getElementById('refreshTestInsights');
     const testInsightsWindow = document.getElementById('testInsightsWindow');
     const testInsightsMinTrades = document.getElementById('testInsightsMinTrades');
+    const refreshEntryOpportunitiesBtn = document.getElementById('refreshEntryOpportunitiesBtn');
+    const autoExecuteEntryBtn = document.getElementById('autoExecuteEntryBtn');
+    const entryOpportunitiesSummary = document.getElementById('entryOpportunitiesSummary');
+    const entryOpportunitiesBody = document.getElementById('entryOpportunitiesBody');
     const intelligenceTopSummary = document.getElementById('intelligenceTopSummary');
     const intelligenceTopTableBody = document.getElementById('intelligenceTopTableBody');
     const refreshIntelligenceTop = document.getElementById('refreshIntelligenceTop');
@@ -149,6 +157,65 @@ document.addEventListener('DOMContentLoaded', () => {
     /** Si ya existe signing key en servidor (.env o BD cifrada), se puede guardar sin reescribirla. */
     let hlSigningKeyPresent = false;
     let copilotTotalState = { enabled: false, profile: 'balanced', reason: 'idle', last_updated: null };
+    let focusModeEnabled = false;
+
+    function bindButtonSafe(button, handler, { stopPropagation = false } = {}) {
+        if (!button || typeof handler !== 'function') return;
+        button.addEventListener('click', async (e) => {
+            if (stopPropagation) e.stopPropagation();
+            if (button.dataset.busy === '1') return;
+            button.dataset.busy = '1';
+            const prevOpacity = button.style.opacity;
+            button.style.opacity = '0.65';
+            button.disabled = true;
+            try {
+                await handler(e);
+            } catch (err) {
+                console.error('Button action failed:', err);
+                alert(`Error en acción: ${err?.message || err}`);
+            } finally {
+                button.dataset.busy = '0';
+                button.style.opacity = prevOpacity;
+                button.disabled = false;
+            }
+        });
+    }
+
+    function setFocusMode(enabled) {
+        focusModeEnabled = !!enabled;
+        document.body.classList.toggle('focus-mode', focusModeEnabled);
+        localStorage.setItem('ui_focus_mode', focusModeEnabled ? '1' : '0');
+        if (toggleFocusModeBtn) {
+            toggleFocusModeBtn.textContent = focusModeEnabled ? 'MODO CLARO UI ON' : 'MODO CLARO UI OFF';
+            toggleFocusModeBtn.style.borderColor = focusModeEnabled ? 'var(--accent-emerald)' : 'rgba(255,255,255,0.25)';
+            toggleFocusModeBtn.style.color = focusModeEnabled ? 'var(--accent-emerald)' : 'var(--text-secondary)';
+        }
+    }
+
+    function initSectionCollapsers() {
+        document.querySelectorAll('.glass').forEach((card, index) => {
+            const header = card.querySelector('.glass-header');
+            const content = card.querySelector('.glass-content');
+            if (!header || !content) return;
+            if (header.querySelector('.section-collapse-btn')) return;
+            const key = `ui_card_collapsed_${index}`;
+            const collapsed = localStorage.getItem(key) === '1';
+            if (collapsed) card.classList.add('is-collapsed');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'section-collapse-btn';
+            btn.textContent = collapsed ? 'Expandir' : 'Contraer';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const next = !card.classList.contains('is-collapsed');
+                card.classList.toggle('is-collapsed', next);
+                btn.textContent = next ? 'Expandir' : 'Contraer';
+                localStorage.setItem(key, next ? '1' : '0');
+            });
+            header.appendChild(btn);
+        });
+    }
 
     function renderCopilotTotalHeaderBadge() {
         if (!copilotTotalHeaderBadge) return;
@@ -1068,7 +1135,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lookback_hours: 24,
-                    min_scored_trades: 8,
+                    min_scored_trades: 6,
                     top_n: 10,
                     require_runtime_ready: false,
                     max_last_trade_age_hours: 24,
@@ -1240,6 +1307,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     'vault': 'Cámara de Seguridad',
                     'strategies': 'Configuración de Algoritmos',
                     'comparison': 'Análisis Comparativo',
+                    'market-adaptation': 'Adaptación al mercado',
                     'backtesting': 'Simulación Histórica',
                     'settings': 'Preferencias Globales'
                 };
@@ -1249,6 +1317,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     'vault': 'Bots archivados y configuraciones de éxito para reutilización rápida.',
                     'strategies': 'Ajusta los parámetros técnicos de tus estrategias de trading.',
                     'comparison': 'Compara activos y lanza ejecuciones directas desde el análisis.',
+                    'market-adaptation': 'Analiza el régimen, guarda perfiles y genera bots alineados con la tendencia (paper por defecto).',
                     'backtesting': 'Valida tus estrategias mediante simulaciones de mercado real.',
                     'settings': 'Gestión de credenciales de exchange y límites de riesgo global.'
                 };
@@ -1272,6 +1341,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (targetId === 'overview') {
                 loadMainnetVisualControl();
                 fetchTestInsights();
+                loadEntryOpportunities();
+            }
+
+            if (targetId === 'market-adaptation') {
+                loadMarketAdaptationProfiles();
+                loadMarketAdaptationProposalQueue();
             }
 
             // Close sidebar on mobile after navigation
@@ -1690,7 +1765,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     async function fetchBotPerformanceSummary() {
         try {
-            const res = await fetch('/api/bots/performance-summary?lookback_hours=168&min_scored_trades=8');
+            const res = await fetch('/api/bots/performance-summary?lookback_hours=168&min_scored_trades=6');
             if (!res.ok) return;
             const data = await res.json();
             const map = {};
@@ -1837,7 +1912,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (scored7 > 0 && win7 != null && net7 != null) {
                 const netStr = (net7 >= 0 ? '+' : '') + '$' + net7.toFixed(2);
                 const pfStr = pf7 != null ? ` · PF ${pf7.toFixed(2)}` : '';
-                rendimientoCell = `<span style="font-size:0.82rem;" title="${readiness.summary || ''}"><strong>${win7.toFixed(1)}%</strong> WR · <span style="color:${net7 >= 0 ? 'var(--accent-emerald)' : 'var(--accent-ruby)'};">${netStr}</span> · ${scored7} ops${pfStr}</span>`;
+                const winColor = win7 >= 55 ? 'var(--accent-emerald)' : (win7 >= 45 ? '#facc15' : 'var(--accent-ruby)');
+                const netColor = net7 > 0 ? 'var(--accent-emerald)' : (net7 < 0 ? 'var(--accent-ruby)' : 'var(--text-muted)');
+                rendimientoCell = `<span style="font-size:0.82rem;" title="${readiness.summary || ''}"><strong style="color:${winColor};">${win7.toFixed(1)}%</strong> WR · <span style="color:${netColor};">${netStr}</span> · ${scored7} ops${pfStr}</span>`;
             } else if ((m.total_trades || 0) > 0 && scored7 === 0) {
                 rendimientoCell = '<span style="color:var(--text-muted);font-size:0.82rem;">Ops sin PnL cerrado</span>';
             }
@@ -2236,15 +2313,81 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function advisorEscapeHtml(s) {
+        if (s === null || s === undefined) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function buildWinningTradeHintsHtml(hints) {
+        if (!hints || typeof hints !== 'object') return '';
+        const best = hints.best_regime_match;
+        const hl = Array.isArray(hints.hyperliquid_mainnet_winners) ? hints.hyperliquid_mainnet_winners : [];
+        const paper = Array.isArray(hints.paper_lab_winners) ? hints.paper_lab_winners : [];
+        const ranked = Array.isArray(hints.winning_setups_ranked) ? hints.winning_setups_ranked : [];
+        const notes = hints.notes_es || '';
+
+        let html = `
+            <div class="winning-hints-block" style="margin-bottom:10px; padding:10px; border:1px solid rgba(250,204,21,0.28); border-radius:8px; background:rgba(250,204,21,0.07);">
+                <div style="font-size:0.72rem; color:#facc15; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.04em;">Historial ganador (PnL &gt; 0)</div>`;
+        if (notes) {
+            html += `<div style="font-size:0.7rem; color:var(--text-muted); margin-bottom:8px;">${advisorEscapeHtml(notes)}</div>`;
+        }
+        if (best && best.source_bot_id) {
+            html += `<div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:6px;">
+                <strong>Alineación régimen actual:</strong>
+                bot <code style="font-size:0.8rem;">${advisorEscapeHtml(best.source_bot_id)}</code>
+                · similitud <strong>${(Number(best.similarity) * 100).toFixed(0)}%</strong>
+                <span style="color:var(--text-muted);">(${advisorEscapeHtml(best.reason || '')})</span>
+            </div>`;
+            if (best.config_snapshot && Object.keys(best.config_snapshot).length) {
+                html += `<pre style="font-size:0.65rem; color:var(--text-muted); overflow:auto; max-height:140px; margin:0 0 8px 0; padding:6px; border-radius:6px; background:rgba(0,0,0,0.25);">${advisorEscapeHtml(JSON.stringify(best.config_snapshot, null, 2))}</pre>`;
+            }
+        } else {
+            html += `<div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:6px;">Sin match fuerte de régimen con un histórico; revisa el ranking si existe.</div>`;
+        }
+
+        if (hl.length) {
+            html += `<div style="font-size:0.7rem; color:var(--accent-emerald); margin-top:6px; margin-bottom:4px;">Mainnet (Hyperliquid)</div><ul style="margin:0; padding-left:18px; font-size:0.72rem; color:var(--text-secondary);">`;
+            hl.slice(0, 5).forEach((w) => {
+                html += `<li><code>${advisorEscapeHtml(w.bot_id)}</code> · ${advisorEscapeHtml(w.strategy || '')} · wins ${w.win_count} · +${Number(w.sum_pnl || 0).toFixed(4)} · ${advisorEscapeHtml(w.position_exit_hint || '')}</li>`;
+            });
+            html += '</ul>';
+        }
+        if (paper.length) {
+            html += `<div style="font-size:0.7rem; color:var(--accent-blue); margin-top:8px; margin-bottom:4px;">Paper (laboratorio)</div><ul style="margin:0; padding-left:18px; font-size:0.72rem; color:var(--text-secondary);">`;
+            paper.slice(0, 4).forEach((w) => {
+                html += `<li><code>${advisorEscapeHtml(w.bot_id)}</code> · +${Number(w.sum_pnl || 0).toFixed(4)} USDT · lado ${advisorEscapeHtml(w.dominant_order_side || '')}</li>`;
+            });
+            html += '</ul>';
+        }
+        if (ranked.length > 0) {
+            html += `<details style="margin-top:8px; font-size:0.7rem; color:var(--text-muted);"><summary style="cursor:pointer; color:var(--text-secondary);">Top setups (detalle)</summary><ul style="margin:6px 0 0 0; padding-left:18px;">`;
+            ranked.slice(0, 8).forEach((r) => {
+                const sim = r.regime_similarity_max != null ? ` · sim.reg ${Number(r.regime_similarity_max).toFixed(2)}` : '';
+                html += `<li><code>${advisorEscapeHtml(r.bot_id)}</code> · +${Number(r.sum_pnl || 0).toFixed(4)}${sim}</li>`;
+            });
+            html += '</ul></details>';
+        }
+        html += '</div>';
+        return html;
+    }
+
     function renderAdvisorResults(data) {
         if (!advisorResults) return;
         const recommendations = data?.recommendations || [];
         const marketContext = data?.market_context || {};
+        const winningHints = buildWinningTradeHintsHtml(data?.winning_trade_hints);
         advisorMap = {};
 
         if (!recommendations.length) {
             advisorResults.style.display = 'block';
-            advisorResults.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
+            advisorResults.innerHTML = winningHints
+                ? (winningHints + '<div style="font-size:0.8rem;color:var(--text-muted); margin-top:8px;">Sin recomendaciones de horizonte; revisa el historial arriba.</div>')
+                : '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
             return;
         }
 
@@ -2265,7 +2408,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
         `;
 
-        advisorResults.innerHTML = marketSummary + recommendations.map((item) => {
+        advisorResults.innerHTML = marketSummary + winningHints + recommendations.map((item) => {
             const actionLabel = item.recommended_action === 'tune_existing'
                 ? `Base recomendada: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
                 : item.recommended_action === 'reduce_risk'
@@ -2354,11 +2497,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!asset30dAdvisor) return;
         const recommendations = data?.recommendations || [];
         const marketContext = data?.market_context || {};
+        const winningHintsAsset = buildWinningTradeHintsHtml(data?.winning_trade_hints);
         assetAdvisorMap = {};
 
         if (!recommendations.length) {
             asset30dAdvisor.style.display = 'block';
-            asset30dAdvisor.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
+            asset30dAdvisor.innerHTML = winningHintsAsset
+                ? (winningHintsAsset + '<div style="font-size:0.8rem;color:var(--text-muted); margin-top:8px;">Sin recomendaciones de horizonte; revisa el historial arriba.</div>')
+                : '<div style="font-size:0.8rem;color:var(--text-muted);">Sin recomendaciones disponibles.</div>';
             return;
         }
 
@@ -2379,7 +2525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
 
         asset30dAdvisor.style.display = 'block';
-        asset30dAdvisor.innerHTML = marketSummary + recommendations.map((item) => {
+        asset30dAdvisor.innerHTML = marketSummary + winningHintsAsset + recommendations.map((item) => {
             const actionLabel = item.recommended_action === 'tune_existing'
                 ? `Base recomendada: ${item.recommended_bot_id || 'bot existente'} (sin sobrescribir)`
                 : item.recommended_action === 'reduce_risk'
@@ -2536,7 +2682,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function activateProductionForBot(botId) {
         const activateProduction = async () => {
             const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
-            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '8', 10) || 8);
+            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '6', 10) || 6);
             const response = await fetch('/api/monitoring/activate-production', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2786,7 +2932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return (netPnl * 10) + winRate + (scoredTrades * 0.1);
     }
 
-    function computeStrategicRecommendationPct(item = {}, minScoredTrades = 8) {
+    function computeStrategicRecommendationPct(item = {}, minScoredTrades = 6) {
         const metrics = item.metrics || {};
         const recommendationLevel = String((item.recommendation || {}).level || '').toLowerCase();
         const scoredTrades = Math.max(0, Number(metrics.scored_trades || 0));
@@ -2795,7 +2941,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const criticalAlerts = Math.max(0, Number(item.open_critical_alerts || item.critical_open_alerts || 0));
         const runtimeReady = !!item.runtime_ready;
 
-        const minTradesSafe = Math.max(1, Number(minScoredTrades || 8));
+        const minTradesSafe = Math.max(1, Number(minScoredTrades || 6));
         const tradeComponent = Math.min(scoredTrades / minTradesSafe, 1) * 25;
         const winRateComponent = Math.min(winRate / 100, 1) * 35;
         const pnlComponent = netPnl <= 0 ? 0 : Math.min(Math.log10(1 + netPnl) / 2, 1) * 20;
@@ -2822,6 +2968,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function sortInsightsRows(rows = []) {
         return [...rows].sort((a, b) => {
+            const gateA = a.readiness?.gate_ok ? 1 : 0;
+            const gateB = b.readiness?.gate_ok ? 1 : 0;
+            if (gateB !== gateA) return gateB - gateA;
+
             const candidateA = a.candidate_for_production ? 1 : 0;
             const candidateB = b.candidate_for_production ? 1 : 0;
             if (candidateB !== candidateA) return candidateB - candidateA;
@@ -2840,7 +2990,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function buildProductionReadiness(item = {}, minScoredTrades = 8) {
+    function buildProductionReadiness(item = {}, minScoredTrades = 6) {
         const metrics = item.metrics || {};
         const readinessApi = item.readiness || {};
         const scoredTrades = Number(metrics.scored_trades || 0);
@@ -2849,12 +2999,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const isRunning = String(item.status || '').toLowerCase() === 'running';
         const recommendationLevel = String((item.recommendation || {}).level || '').toLowerCase();
         const apiGateOk = Boolean(readinessApi.gate_ok);
+        const statGateOk =
+            typeof item.stat_gate_ok === 'boolean' ? item.stat_gate_ok : apiGateOk;
+        const configPromo =
+            typeof item.config_promotion_flag === 'boolean'
+                ? item.config_promotion_flag
+                : Boolean(item.candidate_for_production);
         const apiSummary = String(readinessApi.summary || '').trim();
         const apiBlockers = Array.isArray(readinessApi.blockers)
             ? readinessApi.blockers.map((value) => String(value || '').trim()).filter(Boolean)
             : [];
+        /** Solo el gate estadístico (ventana, WR, PF, PnL…) habilita mainnet; no basta el checkbox ni PRODUCTION_ALLOW_FLAG_OVERRIDE. */
+        const configFlagCandidate = configPromo && !statGateOk;
 
-        if (item.candidate_for_production || apiGateOk) {
+        if (statGateOk) {
             return {
                 ready: true,
                 label: 'APTO PRODUCCION',
@@ -2884,9 +3042,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasKnownBlockers = blockers.length > 0;
         const label = 'NO APTO / BLOQUEADO';
         const color = hasKnownBlockers ? 'var(--accent-ruby)' : '#facc15';
-        const reasonText = apiSummary || (hasKnownBlockers
+        let reasonText = apiSummary || (hasKnownBlockers
             ? blockers.join(' · ')
             : 'Aun no cumple criterios de promocion a produccion');
+        if (configFlagCandidate) {
+            reasonText = '[Marcado preparado en config u override, pero sin gate estadístico] ' + reasonText;
+        }
 
         return {
             ready: false,
@@ -2894,10 +3055,11 @@ document.addEventListener('DOMContentLoaded', () => {
             color,
             reasonText,
             blockers,
+            configFlagOnly: configFlagCandidate,
         };
     }
 
-    function renderProductionEligibilityGroups(rows = [], selectedMinTrades = 8) {
+    function renderProductionEligibilityGroups(rows = [], selectedMinTrades = 6) {
         const readyRows = [];
         const blockedRows = [];
 
@@ -2974,7 +3136,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    function buildBotSemaphore(item = {}, minScoredTrades = 8) {
+    function buildBotSemaphore(item = {}, minScoredTrades = 6) {
         const readiness = buildProductionReadiness(item, minScoredTrades);
         const metrics = item.metrics || {};
         const scoredTrades = Number(metrics.scored_trades || 0);
@@ -2993,7 +3155,7 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         }
 
-        if (!readiness.ready || winRate < 55 || scoredTrades < minScoredTrades) {
+        if (!readiness.ready || winRate < 53 || scoredTrades < minScoredTrades) {
             return {
                 level: 'YELLOW',
                 color: '#facc15',
@@ -3014,7 +3176,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    function renderBotTrafficLightPanel(summary = {}, rows = [], minScoredTrades = 8) {
+    function renderBotTrafficLightPanel(summary = {}, rows = [], minScoredTrades = 6) {
         if (!botTrafficLightHeader || !botTrafficLightSummary || !botTrafficLightList) return;
 
         const semRows = (rows || []).map((item) => ({ item, sem: buildBotSemaphore(item, minScoredTrades) }));
@@ -3074,12 +3236,14 @@ document.addEventListener('DOMContentLoaded', () => {
         `).join('');
     }
 
-    function renderIntelligenceTop(summary = {}, rows = [], selectedWindow = 24, selectedMinTrades = 8) {
+    function renderIntelligenceTop(summary = {}, rows = [], selectedWindow = 24, selectedMinTrades = 6) {
         const orderedRows = sortInsightsRows(rows);
 
         if (intelligenceTopSummary) {
             const botsAnalyzed = summary.bots_analyzed ?? orderedRows.length;
-            const productionCandidates = summary.production_candidates ?? orderedRows.filter(r => r.candidate_for_production).length;
+            const productionCandidates = summary.production_candidates ?? orderedRows.filter((r) => r.readiness?.gate_ok).length;
+            const flagOnlyCount = summary.promotion_flag_without_stat_gate
+                ?? orderedRows.filter((r) => r.candidate_for_production && !r.readiness?.gate_ok).length;
             const criticalAlertsOpen = summary.critical_alerts_open ?? 0;
             const runtimeReady = orderedRows.filter(r => r.runtime_ready).length;
 
@@ -3093,9 +3257,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="font-size:1rem; font-weight:700; color: var(--text-secondary); margin-top:4px;">${botsAnalyzed}</div>
                 </div>
                 <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(16,185,129,0.08);">
-                    <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Candidatos producción</div>
+                    <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Gate estadístico OK</div>
                     <div style="font-size:1rem; font-weight:700; color: var(--accent-emerald); margin-top:4px;">${productionCandidates}</div>
                     <div style="font-size:0.68rem; color: var(--text-muted); margin-top:2px;">Running listos: ${runtimeReady}</div>
+                </div>
+                <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(250,204,21,0.08);">
+                    <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Solo flag / preparado sin muestra</div>
+                    <div style="font-size:1rem; font-weight:700; color: #facc15; margin-top:4px;">${flagOnlyCount}</div>
+                    <div style="font-size:0.64rem; color: var(--text-muted); margin-top:2px;">No cuentan para mainnet</div>
                 </div>
                 <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(239,68,68,0.08);">
                     <div style="font-size:0.68rem; color: var(--text-muted); text-transform: uppercase;">Alertas críticas</div>
@@ -3158,12 +3327,54 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     }
 
+    async function fetchProductionPipelinePanel() {
+        const el = document.getElementById('productionPipelinePanel');
+        if (!el) return;
+        try {
+            const r = await fetch('/api/monitoring/production-pipeline-status?diagnose=1');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            const last = d.last_run || {};
+            const h = Array.isArray(d.hints) ? d.hints : [];
+            const diag = d.diagnose || {};
+            const hl = d.hyperliquid_credentials_ok ? 'OK' : 'falta configurar';
+            const loop = d.loop_running ? 'activo' : 'parado';
+            const parts = [
+                `<strong>Bucle auto:</strong> ${loop}`,
+                `<strong>HL:</strong> ${hl}`,
+                last.at ? `<strong>Último ciclo:</strong> ${last.at}` : '',
+                last.trigger ? `<strong>Origen:</strong> ${last.trigger}` : '',
+                last.activated != null ? `<strong>Activados:</strong> ${last.activated}` : '',
+                last.blocked_not_ready != null ? `<strong>Sin gate/listo:</strong> ${last.blocked_not_ready}` : '',
+                last.skipped_not_paper_executor != null ? `<strong>Omitidos (no paper):</strong> ${last.skipped_not_paper_executor}` : '',
+                diag.gate_ok_count != null ? `<strong>Con gate OK:</strong> ${diag.gate_ok_count}` : '',
+                diag.paper_executor_gate_ok_count != null
+                    ? `<strong>Paper+gate OK:</strong> ${diag.paper_executor_gate_ok_count}`
+                    : '',
+            ].filter(Boolean);
+            const hintBlock = h.length
+                ? `<div style="margin-top:6px; color:#fbbf24; font-size:0.66rem;">${h.map((x) => `· ${String(x)}`).join('<br>')}</div>`
+                : '';
+            const errLine = last.error
+                ? `<div style="margin-top:6px; color:var(--accent-ruby); font-size:0.66rem;">Error último ciclo: ${String(last.error)}</div>`
+                : '';
+            el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px 12px; align-items:baseline;">${parts.join('')}</div>${hintBlock}${errLine}`;
+        } catch (err) {
+            el.innerHTML = `<span style="color:var(--accent-ruby);">No se pudo cargar el pipeline (${err.message}).</span>`;
+        }
+    }
+
     async function fetchTestInsights() {
+        try {
+            await fetchProductionPipelinePanel();
+        } catch (_) {
+            /* panel opcional */
+        }
         if (!testInsightsContent && !intelligenceTopSummary && !intelligenceTopTableBody) return;
 
         try {
             const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
-            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '8', 10) || 8);
+            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '6', 10) || 6);
             const response = await fetch('/api/monitoring/test-results', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3216,14 +3427,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            const flagOnlyHdr = summary.promotion_flag_without_stat_gate
+                ?? orderedRows.filter((r) => r.candidate_for_production && !r.readiness?.gate_ok).length;
+            const gateProfileLabel = String(payload.gate_profile || 'moderate').toUpperCase();
             const header = `
-                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02); display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:8px;">
+                <div style="margin-bottom: 12px; padding: 10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background: rgba(255,255,255,0.02); display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:8px;">
+                    <div style="font-size:0.74rem; color: var(--text-secondary);">Perfil gate<br><strong>${gateProfileLabel}</strong></div>
                     <div style="font-size:0.74rem; color: var(--text-secondary);">Ventana<br><strong>${selectedWindow}h</strong></div>
                     <div style="font-size:0.74rem; color: var(--text-secondary);">Mínimo trades<br><strong>${selectedMinTrades}</strong></div>
-                    <div style="font-size:0.74rem; color: var(--accent-emerald);">Aptos producción<br><strong>${summary.production_candidates ?? 0}</strong></div>
+                    <div style="font-size:0.74rem; color: var(--accent-emerald);">Gate estadístico OK<br><strong>${summary.production_candidates ?? 0}</strong></div>
+                    <div style="font-size:0.74rem; color: #facc15;">Solo flag prep.<br><strong>${flagOnlyHdr}</strong></div>
                     <div style="font-size:0.74rem; color: var(--accent-ruby);">Alertas críticas<br><strong>${summary.critical_alerts_open ?? 0}</strong></div>
                     <div style="font-size:0.74rem; color: ${regimeColor};">Régimen mercado<br><strong>${regimeLabel}</strong></div>
                 </div>
+                <div style="font-size:0.68rem; color: var(--text-muted); margin: -4px 0 10px 0;">Mainnet exige ventana con trades válidos, win rate, PnL y profit factor; marcar “preparado” en el bot no sustituye esa muestra.</div>
             `;
 
             if (testInsightsContent) {
@@ -3250,6 +3467,109 @@ document.addEventListener('DOMContentLoaded', () => {
                 botTrafficLightList.innerHTML = `<div style="color: var(--accent-ruby);">Error calculando semáforo: ${error.message}</div>`;
             }
         }
+    }
+
+    async function loadEntryOpportunities() {
+        if (!entryOpportunitiesSummary && !entryOpportunitiesBody) return;
+        try {
+            const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
+            const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '6', 10) || 6);
+            const response = await fetch('/api/monitoring/entry-opportunities', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lookback_hours: selectedWindow,
+                    min_scored_trades: selectedMinTrades,
+                    top_n: 10,
+                }),
+            });
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            const rows = Array.isArray(payload.results) ? payload.results : [];
+            const offeredCount = Number(payload.offered_count || 0);
+            const profitMode = !!payload.entry_profit_mode;
+            if (entryOpportunitiesSummary) {
+                entryOpportunitiesSummary.innerHTML = `
+                    <strong>Modo:</strong> ${profitMode ? '<span style="color:#38bdf8;">capital (gate + stats)</span>' : '<span style="color:#facc15;">investigación</span>'}
+                    · <strong>Régimen:</strong> ${(payload.market_regime?.regime || 'mixed').toUpperCase()}
+                    · <strong>Ventana:</strong> ${payload.window_hours}h
+                    · <strong>Min trades:</strong> ${payload.min_scored_trades}
+                    · <strong>Ofertas válidas:</strong> <span style="color:${offeredCount > 0 ? 'var(--accent-emerald)' : '#facc15'}; font-weight:700;">${offeredCount}</span>
+                `;
+            }
+            if (!entryOpportunitiesBody) return;
+            if (!rows.length) {
+                entryOpportunitiesBody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 1rem; color: var(--text-muted);">No hay bots preparados para evaluar.</td></tr>';
+                return;
+            }
+            entryOpportunitiesBody.innerHTML = rows.map((r) => {
+                const eff = Number(r.effectiveness_pct || 0);
+                const effColor = eff >= 70 ? 'var(--accent-emerald)' : (eff >= 58 ? '#facc15' : 'var(--accent-ruby)');
+                const ok = !!r?.validation?.ok;
+                const gateOk = !!(r.readiness && r.readiness.gate_ok);
+                const gateCell = gateOk
+                    ? '<span style="color:var(--accent-emerald); font-weight:700;">OK</span>'
+                    : '<span style="color:var(--accent-ruby); font-weight:700;">NO</span>';
+                const sig = r.signal_snapshot || {};
+                const sigText = `M1h ${Number(sig.momentum_1h_pct || 0).toFixed(2)}% · EMA ${Number(sig.ema_spread_pct || 0).toFixed(2)}%`;
+                return `
+                    <tr>
+                        <td>${r.bot_id || '-'}</td>
+                        <td>${r.symbol || '-'}</td>
+                        <td>${r.strategy || '-'}</td>
+                        <td><strong style="color:${effColor};">${eff.toFixed(2)}%</strong></td>
+                        <td>${ok ? '<span style="color:var(--accent-emerald); font-weight:700;">APTA</span>' : '<span style="color:#f59e0b; font-weight:700;">EN ESPERA</span>'}</td>
+                        <td>${gateCell}</td>
+                        <td style="font-size:0.74rem; color: var(--text-muted);">${sigText}</td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (error) {
+            console.error('Error loading entry opportunities:', error);
+            if (entryOpportunitiesSummary) {
+                entryOpportunitiesSummary.innerHTML = `<span style="color: var(--accent-ruby);">Error cargando oportunidades: ${error.message}</span>`;
+            }
+            if (entryOpportunitiesBody) {
+                entryOpportunitiesBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 1rem; color: var(--accent-ruby);">${error.message}</td></tr>`;
+            }
+        }
+    }
+
+    async function autoExecuteEntryIfOk() {
+        const selectedWindow = Math.max(1, parseInt(testInsightsWindow?.value || '24', 10) || 24);
+        const selectedMinTrades = Math.max(1, parseInt(testInsightsMinTrades?.value || '6', 10) || 6);
+        const minEffectivenessPct = 58;
+        const ok = window.confirm(
+            `Modo capital: solo si gate estadístico OK + efectividad >= ${minEffectivenessPct}%, sin posición abierta y con cooldown (paper/testnet según bot).\n\n¿Continuar?`
+        );
+        if (!ok) return;
+        const response = await fetch('/api/monitoring/entry-opportunities/auto-execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                lookback_hours: selectedWindow,
+                min_scored_trades: selectedMinTrades,
+                top_n: 10,
+                min_effectiveness_pct: minEffectivenessPct,
+                cooldown_sec: 900,
+                dry_run: false,
+                only_paper: true
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(payload.detail || `HTTP ${response.status}`);
+        }
+        const executed = Number(payload.executed_count || 0);
+        const msg = executed > 0
+            ? `Auto-ejecución completada: ${executed} entrada(s) ejecutadas.`
+            : 'Auto-ejecución completada: no hubo candidatos válidos en este momento.';
+        alert(msg);
+        await loadEntryOpportunities();
+        await fetchBots();
     }
 
 
@@ -3719,76 +4039,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    if (refreshMainnetVisualBtn) {
-        refreshMainnetVisualBtn.addEventListener('click', loadMainnetVisualControl);
+    bindButtonSafe(refreshMainnetVisualBtn, loadMainnetVisualControl);
+    bindButtonSafe(saveHyperliquidSettingsBtn, saveHyperliquidSettings);
+    bindButtonSafe(refreshRuntimeOpsBtn, loadRuntimeOpsStatus);
+    bindButtonSafe(refreshTakeProfitAdaptiveBtn, loadTakeProfitAdaptiveStatus);
+    bindButtonSafe(startRuntimeOpsBtn, startRuntimeOps);
+    bindButtonSafe(stopRuntimeOpsBtn, stopRuntimeOps);
+    bindButtonSafe(toggleRuntimeOpsOverviewBtn, toggleRuntimeOpsOverview);
+    bindButtonSafe(toggleCopilotTotalBtn, toggleCopilotTotalMode);
+    bindButtonSafe(toggleControlCompactBtn, async () => {
+        const enabled = !controlCenterCard?.classList.contains('is-compact');
+        setControlCenterCompact(enabled);
+    });
+    bindButtonSafe(refreshTestInsights, fetchTestInsights);
+    bindButtonSafe(refreshIntelligenceTop, fetchTestInsights);
+    bindButtonSafe(refreshEntryOpportunitiesBtn, loadEntryOpportunities);
+    bindButtonSafe(autoExecuteEntryBtn, autoExecuteEntryIfOk);
+    bindButtonSafe(generateBotFromTextBtn, generateBotParamsFromPrompt);
+    bindButtonSafe(asset30dAnalyzeBtn, runAsset30dAnalysis);
+    bindButtonSafe(asset30dRecommendBtn, runAsset30dRecommendation);
+    bindButtonSafe(microScalpCreateBtn, createMicroScalpBot);
+
+    if (toggleFocusModeBtn) {
+        bindButtonSafe(toggleFocusModeBtn, async () => setFocusMode(!focusModeEnabled));
     }
+    setFocusMode(localStorage.getItem('ui_focus_mode') === '1');
+    initSectionCollapsers();
 
-
-    if (saveHyperliquidSettingsBtn) {
-        saveHyperliquidSettingsBtn.addEventListener('click', saveHyperliquidSettings);
-    }
-
-    if (refreshRuntimeOpsBtn) {
-        refreshRuntimeOpsBtn.addEventListener('click', loadRuntimeOpsStatus);
-    }
-
-    if (refreshTakeProfitAdaptiveBtn) {
-        refreshTakeProfitAdaptiveBtn.addEventListener('click', loadTakeProfitAdaptiveStatus);
-    }
-
-    if (startRuntimeOpsBtn) {
-        startRuntimeOpsBtn.addEventListener('click', startRuntimeOps);
-    }
-
-    if (stopRuntimeOpsBtn) {
-        stopRuntimeOpsBtn.addEventListener('click', stopRuntimeOps);
-    }
-
-    if (toggleRuntimeOpsOverviewBtn) {
-        toggleRuntimeOpsOverviewBtn.addEventListener('click', toggleRuntimeOpsOverview);
-    }
-
-    if (toggleCopilotTotalBtn) {
-        toggleCopilotTotalBtn.addEventListener('click', toggleCopilotTotalMode);
-    }
-
-    if (toggleControlCompactBtn) {
-        toggleControlCompactBtn.addEventListener('click', () => {
-            const enabled = !controlCenterCard?.classList.contains('is-compact');
-            setControlCenterCompact(enabled);
+    if (testInsightsWindow) {
+        testInsightsWindow.addEventListener('change', () => {
+            fetchTestInsights();
+            loadEntryOpportunities();
         });
     }
 
-    if (refreshTestInsights) {
-        refreshTestInsights.addEventListener('click', fetchTestInsights);
-    }
-
-    if (refreshIntelligenceTop) {
-        refreshIntelligenceTop.addEventListener('click', fetchTestInsights);
-    }
-
-    if (generateBotFromTextBtn) {
-        generateBotFromTextBtn.addEventListener('click', generateBotParamsFromPrompt);
-    }
-
-    if (testInsightsWindow) {
-        testInsightsWindow.addEventListener('change', fetchTestInsights);
-    }
-
     if (testInsightsMinTrades) {
-        testInsightsMinTrades.addEventListener('change', fetchTestInsights);
-    }
-
-    if (asset30dAnalyzeBtn) {
-        asset30dAnalyzeBtn.addEventListener('click', runAsset30dAnalysis);
-    }
-
-    if (asset30dRecommendBtn) {
-        asset30dRecommendBtn.addEventListener('click', runAsset30dRecommendation);
-    }
-
-    if (microScalpCreateBtn) {
-        microScalpCreateBtn.addEventListener('click', createMicroScalpBot);
+        testInsightsMinTrades.addEventListener('change', () => {
+            fetchTestInsights();
+            loadEntryOpportunities();
+        });
     }
 
     // Delegated Change listener for Executor dropdown
@@ -4422,6 +4711,177 @@ document.addEventListener('DOMContentLoaded', () => {
         editBotExecutorSelect.addEventListener('change', refreshEditBotHyperliquidRow);
     }
 
+    // --- Laboratorio adaptación mercado ---
+    const maStatus = document.getElementById('maStatus');
+    const maAnalyzeOut = document.getElementById('maAnalyzeOut');
+    const maProfilesBody = document.getElementById('maProfilesBody');
+    const maQueueBody = document.getElementById('maQueueBody');
+
+    function setMaStatus(msg, isError) {
+        if (!maStatus) return;
+        maStatus.textContent = msg || '';
+        maStatus.style.color = isError ? 'var(--accent-ruby, #f43f5e)' : 'var(--text-muted)';
+    }
+
+    async function loadMarketAdaptationProfiles() {
+        if (!maProfilesBody) return;
+        try {
+            const res = await fetch('/api/market-adaptation/profiles?limit=80');
+            const data = await res.json();
+            const rows = data.profiles || [];
+            if (!rows.length) {
+                maProfilesBody.innerHTML = '<tr><td colspan="7" style="color: var(--text-muted);">No hay perfiles guardados todavía.</td></tr>';
+                return;
+            }
+            maProfilesBody.innerHTML = rows.map((p) => {
+                const created = (p.created_at || '').replace('T', ' ').slice(0, 19);
+                return `<tr>
+                    <td>${created || '—'}</td>
+                    <td>${p.symbol || ''}</td>
+                    <td>${p.regime || ''} <span style="opacity:.7">${p.trend_bucket || ''}/${p.vol_bucket || ''}</span></td>
+                    <td>${p.strategy || ''}</td>
+                    <td>${p.match_count ?? 0}</td>
+                    <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${p.created_bot_id || '—'}</td>
+                    <td><button type="button" class="glass ma-spawn-profile-btn" data-profile-id="${p.id}"
+                        style="padding:4px 8px;font-size:0.68rem;border:1px solid var(--accent-emerald);color:var(--accent-emerald);">Bot</button></td>
+                </tr>`;
+            }).join('');
+            document.querySelectorAll('.ma-spawn-profile-btn').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const pid = btn.getAttribute('data-profile-id');
+                    await runMarketAdaptationSpawn({ profileId: pid });
+                });
+            });
+        } catch (e) {
+            console.error(e);
+            maProfilesBody.innerHTML = '<tr><td colspan="7" style="color:var(--accent-ruby);">Error cargando perfiles.</td></tr>';
+        }
+        if (window.lucide) lucide.createIcons();
+    }
+
+    async function loadMarketAdaptationProposalQueue() {
+        if (!maQueueBody) return;
+        try {
+            const res = await fetch('/api/market-adaptation/proposals?status=pending&limit=60');
+            const data = await res.json();
+            const rows = data.proposals || [];
+            if (!rows.length) {
+                maQueueBody.innerHTML = '<tr><td colspan="7" style="color: var(--text-muted);">No hay propuestas pendientes.</td></tr>';
+                return;
+            }
+            maQueueBody.innerHTML = rows.map((p) => {
+                const t = (p.created_at || '').replace('T', ' ').slice(0, 19);
+                const strat = (p.bot_config_template && p.bot_config_template.strategy) || '—';
+                const fp = (p.fingerprint || '').slice(0, 10);
+                return `<tr>
+                    <td>${t}</td>
+                    <td><span style="text-transform:uppercase;font-size:0.65rem;">${p.status || ''}</span></td>
+                    <td>${p.source || ''}</td>
+                    <td>${p.symbol || ''}</td>
+                    <td>${strat}</td>
+                    <td title="${p.fingerprint || ''}">${fp}…</td>
+                    <td style="white-space:nowrap;">
+                        <button type="button" class="glass ma-queue-accept" data-proposal-id="${p.id}"
+                            style="padding:4px 8px;font-size:0.65rem;margin-right:4px;border:1px solid var(--accent-emerald);color:var(--accent-emerald);">Aceptar paper</button>
+                        <button type="button" class="glass ma-queue-dismiss" data-proposal-id="${p.id}"
+                            style="padding:4px 8px;font-size:0.65rem;border:1px solid rgba(255,255,255,0.2);color:var(--text-muted);">Descartar</button>
+                    </td>
+                </tr>`;
+            }).join('');
+            maQueueBody.querySelectorAll('.ma-queue-accept').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const id = btn.getAttribute('data-proposal-id');
+                    setMaStatus('Aceptando propuesta (paper STOPPED)…');
+                    try {
+                        const r = await fetch(`/api/market-adaptation/proposals/${id}/accept`, { method: 'POST' });
+                        const d = await r.json();
+                        if (!r.ok) throw new Error(d.detail || r.statusText);
+                        setMaStatus(`Creado ${d.bot_id} en paper.`);
+                        fetchBots();
+                        loadMarketAdaptationProposalQueue();
+                    } catch (e) {
+                        setMaStatus(String(e.message || e), true);
+                    }
+                });
+            });
+            maQueueBody.querySelectorAll('.ma-queue-dismiss').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const id = btn.getAttribute('data-proposal-id');
+                    try {
+                        const r = await fetch(`/api/market-adaptation/proposals/${id}/dismiss`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ reason: 'ui_dismiss' })
+                        });
+                        const d = await r.json();
+                        if (!r.ok) throw new Error(d.detail || r.statusText);
+                        loadMarketAdaptationProposalQueue();
+                    } catch (e) {
+                        setMaStatus(String(e.message || e), true);
+                    }
+                });
+            });
+        } catch (e) {
+            console.error(e);
+            maQueueBody.innerHTML = '<tr><td colspan="7" style="color:var(--accent-ruby);">Error cargando cola.</td></tr>';
+        }
+        if (window.lucide) lucide.createIcons();
+    }
+
+    async function runMarketAdaptationAnalyze() {
+        const sym = document.getElementById('maSymbol')?.value?.trim() || 'BTC/USDT';
+        const persist = !!document.getElementById('maPersistSnapshot')?.checked;
+        setMaStatus('Analizando…');
+        if (maAnalyzeOut) maAnalyzeOut.textContent = '…';
+        try {
+            const res = await fetch('/api/market-adaptation/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol: sym, persist_snapshot: persist })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || res.statusText);
+            if (maAnalyzeOut) maAnalyzeOut.textContent = JSON.stringify(data, null, 2);
+            setMaStatus(persist ? 'Análisis listo y perfil guardado o actualizado.' : 'Análisis listo.');
+            if (data.proposal_queue && data.proposal_queue.enqueued) {
+                setMaStatus((persist ? 'Perfil actualizado. ' : '') + 'Nueva entrada en cola de revisión.');
+                loadMarketAdaptationProposalQueue();
+            }
+            if (persist) loadMarketAdaptationProfiles();
+        } catch (e) {
+            setMaStatus(String(e.message || e), true);
+            if (maAnalyzeOut) maAnalyzeOut.textContent = 'Error: ' + String(e.message || e);
+        }
+    }
+
+    async function runMarketAdaptationSpawn({ profileId } = {}) {
+        const sym = document.getElementById('maSymbol')?.value?.trim() || 'BTC/USDT';
+        const executor = document.getElementById('maExecutor')?.value || 'paper';
+        const start = !!document.getElementById('maAutoStart')?.checked;
+        setMaStatus('Creando bot…');
+        try {
+            const body = { symbol: sym, executor, start };
+            if (profileId) body.profile_id = profileId;
+            const res = await fetch('/api/market-adaptation/spawn', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || res.statusText);
+            setMaStatus(`Bot ${data.bot_id} creado (${data.executor}). started=${data.started}`);
+            fetchBots();
+            loadMarketAdaptationProfiles();
+        } catch (e) {
+            setMaStatus(String(e.message || e), true);
+        }
+    }
+
+    document.getElementById('maAnalyzeBtn')?.addEventListener('click', runMarketAdaptationAnalyze);
+    document.getElementById('maSpawnFreshBtn')?.addEventListener('click', () => runMarketAdaptationSpawn({}));
+    document.getElementById('maLoadProfilesBtn')?.addEventListener('click', loadMarketAdaptationProfiles);
+    document.getElementById('maRefreshQueueBtn')?.addEventListener('click', loadMarketAdaptationProposalQueue);
+
     // Initial load and periodic refresh
     initControlCenterCompactMode();
     fetchBots();
@@ -4434,10 +4894,13 @@ document.addEventListener('DOMContentLoaded', () => {
     loadRuntimeOpsStatus();
     loadCopilotTotalStatus();
     loadTakeProfitAdaptiveStatus();
+    loadEntryOpportunities();
     setInterval(fetchBots, 5000);
     setInterval(fetchTrades, 10000);
     setInterval(fetchStats, 10000);
     setInterval(fetchTestInsights, 20000);
+    setInterval(loadEntryOpportunities, 20000);
+    setInterval(fetchProductionPipelinePanel, 12000);
     setInterval(loadMainnetVisualControl, 15000);
     setInterval(loadRuntimeOpsStatus, 15000);
     setInterval(loadTakeProfitAdaptiveStatus, 20000);

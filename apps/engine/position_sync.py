@@ -171,6 +171,18 @@ class PositionSyncService:
             # 3. Marcar como cerradas las posiciones locales que ya no existen en el exchange
             for key, pos in local_pos_map.items():
                 if key not in exchange_processed_keys:
+                    # Si la posición pertenece a un bot que opera en paper (no hyperliquid),
+                    # no la cerremos al sincronizar contra el exchange real/testnet.
+                    # Esto evita que "desaparezcan" posiciones simuladas en la UI.
+                    try:
+                        managing_bot = db.query(BotDB).filter(BotDB.id == pos.bot_id).first()
+                        bot_executor = str((managing_bot.config or {}).get("executor") or "paper").strip().lower() if managing_bot else "paper"
+                        if "hyperliquid" not in bot_executor:
+                            continue
+                    except Exception:
+                        # Si falla la detección del executor, preferimos no cerrar para evitar borrar paper.
+                        continue
+
                     pos.is_open = False
                     pos.updated_at = datetime.utcnow()
                     results["closed_locally"] += 1

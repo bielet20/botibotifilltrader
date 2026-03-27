@@ -64,6 +64,17 @@
             color: var(--muted);
         }
         .status.error { color: var(--danger); }
+        .link-btn {
+            margin-top: 10px;
+            width: 100%;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            border-radius: 10px;
+            padding: 9px 12px;
+            cursor: pointer;
+        }
+        .small { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -80,15 +91,34 @@
                 <input id="totpCode" name="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" />
             </div>
             <button id="submitBtn" type="submit">Entrar</button>
+            <button id="forgotBtn" type="button" class="link-btn">Olvidé mi contraseña</button>
             <div id="status" class="status"></div>
+        </form>
+        <form id="resetRequestForm" style="display:none; margin-top:12px;">
+            <label for="recoveryEmail">Email de recuperación</label>
+            <input id="recoveryEmail" type="email" placeholder="admin@tu-dominio.com" />
+            <button id="sendResetBtn" type="submit">Enviar email de renovación</button>
+            <div class="small">Se enviará un enlace/token de validez limitada.</div>
+        </form>
+        <form id="resetConfirmForm" style="display:none; margin-top:12px;">
+            <label for="resetToken">Token</label>
+            <input id="resetToken" placeholder="Pega aquí el token" />
+            <label for="newPassword">Nueva contraseña</label>
+            <input id="newPassword" type="password" />
+            <label for="newPassword2">Confirmar nueva contraseña</label>
+            <input id="newPassword2" type="password" />
+            <button id="confirmResetBtn" type="submit">Actualizar contraseña</button>
         </form>
     </div>
     <script>
         const form = document.getElementById('loginForm');
         const submitBtn = document.getElementById('submitBtn');
+        const forgotBtn = document.getElementById('forgotBtn');
         const statusBox = document.getElementById('status');
         const totpWrap = document.getElementById('totpWrap');
         const totpInput = document.getElementById('totpCode');
+        const resetRequestForm = document.getElementById('resetRequestForm');
+        const resetConfirmForm = document.getElementById('resetConfirmForm');
         let requiresTotp = false;
         const setStatus = (msg, isError = false) => {
             statusBox.textContent = msg || '';
@@ -143,6 +173,65 @@
                 submitBtn.textContent = 'Entrar';
             }
         });
+
+        if (forgotBtn) {
+            forgotBtn.addEventListener('click', () => {
+                resetRequestForm.style.display = resetRequestForm.style.display === 'none' ? 'block' : 'none';
+            });
+        }
+
+        if (resetRequestForm) {
+            resetRequestForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = (document.getElementById('recoveryEmail').value || '').trim();
+                try {
+                    const res = await fetch('/api/auth/password-reset/request', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email, base_url: window.location.origin }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                    setStatus('Si el email coincide, se enviaron instrucciones.');
+                } catch (err) {
+                    setStatus(`Error: ${err.message || 'No se pudo enviar'}`, true);
+                }
+            });
+        }
+
+        const url = new URL(window.location.href);
+        const qsToken = (url.searchParams.get('reset_token') || '').trim();
+        if (qsToken && resetConfirmForm) {
+            resetConfirmForm.style.display = 'block';
+            const tokenInput = document.getElementById('resetToken');
+            if (tokenInput) tokenInput.value = qsToken;
+        }
+
+        if (resetConfirmForm) {
+            resetConfirmForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const token = (document.getElementById('resetToken').value || '').trim();
+                const newPassword = document.getElementById('newPassword').value || '';
+                const confirmPassword = document.getElementById('newPassword2').value || '';
+                try {
+                    const res = await fetch('/api/auth/password-reset/confirm', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            token,
+                            new_password: newPassword,
+                            confirm_password: confirmPassword,
+                        }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                    setStatus('Contraseña actualizada. Ya puedes iniciar sesión.');
+                    resetConfirmForm.style.display = 'none';
+                } catch (err) {
+                    setStatus(`Error: ${err.message || 'No se pudo actualizar'}`, true);
+                }
+            });
+        }
 
         checkAlreadyLogged();
     </script>

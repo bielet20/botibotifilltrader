@@ -3,11 +3,12 @@ from apps.shared.models import TradeSignal, TradeSide
 import asyncio
 
 class GridTradingStrategy(BaseStrategy):
-    def __init__(self, upper_limit: float, lower_limit: float, num_grids: int):
+    def __init__(self, upper_limit: float, lower_limit: float, num_grids: int, seed_entry: bool = False):
         self.upper_limit = upper_limit
         self.lower_limit = lower_limit
         self.num_grids = num_grids
         self.grid_size = (upper_limit - lower_limit) / num_grids
+        self.seed_entry = bool(seed_entry)
         
         # Calculate grid levels
         self.levels = [lower_limit + i * self.grid_size for i in range(num_grids + 1)]
@@ -36,7 +37,12 @@ class GridTradingStrategy(BaseStrategy):
         side = TradeSide.HOLD
         
         # Grid Crossing Logic
-        if self.last_grid_level is not None:
+        if self.last_grid_level is None:
+            # Optional: abrir una posición inicial para evitar depender de un cruce inmediato
+            # (útil en test/diagnóstico y/o cuando seed_entry está activado).
+            if self.seed_entry:
+                side = TradeSide.BUY
+        else:
             if current_level_idx < self.last_grid_level:
                 # Price dropped to a lower grid level -> BUY
                 side = TradeSide.BUY

@@ -3,6 +3,7 @@ from statistics import mean, pstdev
 from typing import Dict, Any, List
 
 from apps.engine.market_data import MarketDataEngine
+from apps.ai_engine.winning_trade_profiles import build_advisor_hints, merge_winning_config_hints
 from apps.shared.bot_presets import get_bot_preset
 from apps.shared.models import BotDB, TradeDB
 
@@ -344,6 +345,8 @@ async def build_bot_advice(db, symbol: str, allocation: float) -> Dict[str, Any]
         except Exception:
             pass
 
+    winning_trade_hints = build_advisor_hints(db, symbol, market_context)
+
     bots: List[BotDB] = db.query(BotDB).filter(BotDB.is_archived == False).all()
     symbol_filtered = [bot for bot in bots if _bot_matches_symbol(bot, symbol)]
     non_advisor_filtered = [
@@ -374,10 +377,12 @@ async def build_bot_advice(db, symbol: str, allocation: float) -> Dict[str, Any]
 
         preset, preset_id = _pick_preset_for_horizon(horizon, symbol)
         new_bot_config = _horizon_tuned_config((preset or {}).get("config", {}), horizon, symbol, allocation)
+        new_bot_config = merge_winning_config_hints(new_bot_config, winning_trade_hints)
 
         if best_bot:
             selected_bot, metrics = best_bot
             edited_config = _horizon_tuned_config(selected_bot.config or {}, horizon, symbol, allocation)
+            edited_config = merge_winning_config_hints(edited_config, winning_trade_hints)
             risk_reduce_config = _risk_reduced_config(selected_bot.config or {}, symbol, allocation)
 
             underperforming = (
@@ -444,4 +449,5 @@ async def build_bot_advice(db, symbol: str, allocation: float) -> Dict[str, Any]
         "generated_at": "advisor-runtime",
         "market_context": market_context,
         "recommendations": recommendations,
+        "winning_trade_hints": winning_trade_hints,
     }

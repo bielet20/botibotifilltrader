@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from enum import Enum
 from datetime import datetime
-from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey, Uuid, Text
+from sqlalchemy import Column, String, Float, DateTime, JSON, Boolean, ForeignKey, Uuid, Text, Integer
 import uuid
 
 # Base for SQLAlchemy
@@ -160,6 +160,52 @@ class EncryptedCredentialDB(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MarketAdaptationProposalDB(Base):
+    """
+    Cola de revisión: el mercado actual coincide con un perfil guardado (reutilización).
+    Nunca implica activación mainnet automática; el operador acepta creación en paper.
+    """
+    __tablename__ = "market_adaptation_proposals"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    fingerprint = Column(String(32), nullable=False, index=True)
+    symbol = Column(String(40), nullable=False, index=True)
+    profile_id = Column(String(36), nullable=True, index=True)
+    status = Column(String(24), nullable=False, default="pending")  # pending|accepted|dismissed
+    source = Column(String(32), nullable=False, default="api")  # api|orchestrator
+    market_snapshot = Column(JSON, default={})
+    bot_config_template = Column(JSON, nullable=False)
+    trigger_ref = Column(String(120), nullable=True)
+    created_bot_id = Column(String(100), nullable=True)
+    dismiss_reason = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class MarketAdaptationProfileDB(Base):
+    """
+    Perfiles de mercado + plantilla de bot guardados para reutilizar cuando se repitan
+    condiciones similares (régimen, buckets de tendencia/volatilidad, fingerprint).
+    """
+    __tablename__ = "market_adaptation_profiles"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    fingerprint = Column(String(32), nullable=False, index=True)
+    symbol = Column(String(40), nullable=False, index=True)
+    regime = Column(String(32), nullable=False)
+    trend_bucket = Column(String(24), nullable=False)
+    vol_bucket = Column(String(24), nullable=False)
+    analysis_snapshot = Column(JSON, default={})
+    market_context = Column(JSON, default={})
+    strategy = Column(String(100), nullable=False)
+    bot_config_template = Column(JSON, nullable=False)
+    created_bot_id = Column(String(100), nullable=True)
+    match_count = Column(Integer, default=0)
+    last_matched_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    label = Column(String(255), nullable=True)
+
+
 class AutopilotDecisionLogDB(Base):
     """
     Journal persistente de decisiones del Copiloto.
@@ -179,3 +225,25 @@ class AutopilotDecisionLogDB(Base):
     metrics = Column(JSON, default={})
     changes = Column(JSON, default={})
     extra = Column(JSON, default={})
+
+
+class AppSettingDB(Base):
+    """Key/value settings persisted in DB (first-run setup, recovery email, SMTP config)."""
+    __tablename__ = "app_settings"
+
+    key = Column(String(120), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PasswordResetTokenDB(Base):
+    """One-time password reset tokens (hashed) delivered by email."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True, index=True)
+    meta = Column(JSON, default={})

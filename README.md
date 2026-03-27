@@ -147,6 +147,34 @@ Restaurar backup:
 python scripts/restore_db_backup.py --file backups/db/<archivo>.bin.enc
 ```
 
+### Primer arranque guiado (setup inicial)
+
+Si habilitas autenticación y aún no está configurada, la app redirige automáticamente a:
+
+- `GET /setup`
+
+Desde ahí el usuario define:
+- usuario y contraseña admin,
+- email de recuperación,
+- SMTP para renovar contraseña por email.
+
+APIs relacionadas:
+- `GET /api/setup/status`
+- `POST /api/setup/initialize`
+- `POST /api/setup/smtp-test` (obligatorio antes de finalizar setup)
+- `POST /api/auth/password-reset/request`
+- `POST /api/auth/password-reset/confirm`
+- `GET /api/db-backups/download/{file_name}` (descargar backup cifrado)
+
+Atajo de instalación inicial en servidor:
+```bash
+bash scripts/first_install_setup.sh docker-compose.prod.yml .env
+```
+
+Al completar `POST /api/setup/initialize`:
+- se envía email de confirmación de instalación al recovery email,
+- se intenta crear un backup inicial cifrado (si `DB_BACKUP_ENCRYPTION_KEY` está configurada).
+
 ## 🐳 Docker desarrollo (stack completo)
 
 Levanta **Postgres (Timescale)**, **Redis**, **API** y **worker** con un solo comando.
@@ -208,6 +236,23 @@ curl http://127.0.0.1:8000/api/health
 # Apagar
 docker compose -f docker-compose.prod.yml down
 ```
+
+### 🔁 Despliegue autónomo (capital-first)
+
+Preset y script listos para dejar el servidor trabajando en automático:
+
+```bash
+# 1) Ajusta secretos en .env.server.autonomy (wallet, key, passwords, hashes)
+
+# 2) Despliega
+bash scripts/deploy_server_autonomy.sh .env.server.autonomy
+```
+
+Qué valida este script:
+- API saludable (`/api/health`)
+- watchdog activo (`/api/autonomy/watchdog/status`)
+- autonomía de capital activa (max_active/base_allocation)
+- ciclo manual de watchdog (`/api/autonomy/watchdog/run-once`)
 
 Variables mínimas recomendadas en `.env` para server:
 

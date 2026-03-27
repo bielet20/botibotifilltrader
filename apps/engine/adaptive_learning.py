@@ -131,10 +131,38 @@ class AdaptiveLearningStrategy(BaseStrategy):
 
         side = TradeSide.BUY if trend_strength >= 0 and momentum >= 0 else TradeSide.SELL
 
+        ctx = dict(market_data.get("autopilot_last_context") or {})
+        ext_trend = float(ctx.get("trend_pct", 0.0) or 0.0)
+        # Copiloto: evitar nuevos longs si el contexto multi-timeframe es claramente bajista.
+        macro_block_long = ext_trend <= -0.28
+
         positions = dict(portfolio.get("positions") or {})
         position_for_symbol = dict(positions.get(symbol) or {})
         current_amount = float(position_for_symbol.get("amount") or 0.0)
         allow_short = bool(market_data.get("allow_short", False))
+
+        if side == TradeSide.BUY and macro_block_long and current_amount <= 0:
+            new_state = dict(learning_state)
+            new_state.update({
+                "adaptive_threshold": round(adaptive_threshold * 0.998, 8),
+                "last_confidence": round(confidence, 8),
+                "last_volatility": round(volatility, 8),
+                "last_side": "hold",
+            })
+            return TradeSignal(
+                symbol=symbol,
+                side=TradeSide.HOLD,
+                amount=0,
+                price=price,
+                strategy_id="Adaptive_Learning_v1",
+                meta={
+                    "reason": "copilot_macro_bearish_blocks_new_long",
+                    "trend": round(trend_strength, 6),
+                    "momentum": round(momentum, 6),
+                    "autopilot_trend_pct": round(ext_trend, 6),
+                    "learning_state": new_state,
+                },
+            )
         last_exec_side = str(learning_state.get("last_exec_side", "") or "").lower()
         last_exec_price = float(learning_state.get("last_exec_price", 0.0) or 0.0)
         last_exec_at = float(learning_state.get("last_exec_at", 0.0) or 0.0)
