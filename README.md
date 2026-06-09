@@ -44,7 +44,7 @@ A modular, scalable, and secure platform for assisted and automatic trading acro
 Para generar datos de validación paper sin corrupción de archivos, ejecuta siempre con el Python del entorno virtual y `PYTHONPATH`:
 
 ```bash
-cd "/Users/bielrivero/Library/Mobile Documents/com~apple~CloudDocs/APPS ANTIGRAVITY BIEL/AAA BOT TRADING"
+cd /path/to/botibotifilltrader
 PYTHONPATH=. .venv/bin/python scripts/monitor_paper_fleet.py --hours 2 --interval 120 --prefix paper_lab_prod
 ```
 

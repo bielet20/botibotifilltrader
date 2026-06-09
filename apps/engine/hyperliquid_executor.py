@@ -1,11 +1,43 @@
 import ccxt.async_support as ccxt
 import os
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from apps.shared.interfaces import BaseExecutionProvider
 from apps.shared.models import TradeSignal, ExecutionResult
 from apps.shared.hyperliquid_credentials import get_hyperliquid_wallet_and_key
+
+logger = logging.getLogger(__name__)
+
+_RETRIABLE = (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout)
+_MAX_RETRIES = int(os.getenv("EXECUTOR_MAX_RETRIES", "3"))
+_RETRY_BASE_DELAY = float(os.getenv("EXECUTOR_RETRY_BASE_DELAY", "2.0"))
+
+
+async def _with_retry(coro_fn, *args, label: str = "", **kwargs):
+    """Execute an async CCXT call with exponential backoff on transient errors."""
+    last_exc = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return await coro_fn(*args, **kwargs)
+        except _RETRIABLE as exc:
+            last_exc = exc
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            logger.warning(
+                "[Hyperliquid] %s transient error (attempt %d/%d): %s — retrying in %.1fs",
+                label, attempt, _MAX_RETRIES, exc, delay,
+            )
+            await asyncio.sleep(delay)
+        except ccxt.RateLimitExceeded as exc:
+            last_exc = exc
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning(
+                "[Hyperliquid] %s rate-limited (attempt %d/%d) — retrying in %.1fs",
+                label, attempt, _MAX_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+    raise last_exc
 
 class HyperliquidExecutor(BaseExecutionProvider):
     """
@@ -118,10 +150,12 @@ class HyperliquidExecutor(BaseExecutionProvider):
         """Return current live position side and size for symbol as (side, qty)."""
         try:
             if not self.exchange.markets:
-                await self.exchange.load_markets()
+                await _with_retry(self.exchange.load_markets, label="load_markets")
             wallet_address = self._wallet_address or os.getenv("HYPERLIQUID_WALLET_ADDRESS") or self.exchange.walletAddress
             params = {"user": wallet_address} if wallet_address else {}
-            positions = await self.exchange.fetch_positions(params=params)
+            positions = await _with_retry(
+                self.exchange.fetch_positions, params=params, label="fetch_positions"
+            )
             target = self._normalize_symbol(symbol)
             for p in positions or []:
                 sym = self._normalize_symbol(str(p.get("symbol") or ""))
@@ -131,7 +165,8 @@ class HyperliquidExecutor(BaseExecutionProvider):
                 if qty > 0:
                     return side, qty
             return "", 0.0
-        except Exception:
+        except Exception as exc:
+            logger.error("[Hyperliquid] _fetch_symbol_position failed for %s: %s", symbol, exc)
             return "", 0.0
             
     async def execute(self, signal: TradeSignal) -> ExecutionResult:
@@ -193,7 +228,9 @@ class HyperliquidExecutor(BaseExecutionProvider):
 
             if not price or float(price) <= 0:
                 # Hyperliquid market orders in CCXT still need a reference price.
-                ticker = await self.exchange.fetch_ticker(symbol)
+                ticker = await _with_retry(
+                    self.exchange.fetch_ticker, symbol, label="fetch_ticker"
+                )
                 price = float(ticker.get('last') or ticker.get('close') or ticker.get('bid') or 0)
 
             if price <= 0:
@@ -204,17 +241,16 @@ class HyperliquidExecutor(BaseExecutionProvider):
                     avg_price=0,
                     timestamp=datetime.now(timezone.utc),
                 )
-            
-            # Crear la orden de mercado
-            # Nota: En CCXT.hyperliquid, para órdenes market, el argumento 'price' 
-            # se usa para calcular el slippage.
-            order = await self.exchange.create_order(
+
+            order = await _with_retry(
+                self.exchange.create_order,
                 symbol=symbol,
                 type='market',
                 side=side,
                 amount=amount,
                 price=price,
                 params=order_params,
+                label="create_order",
             )
 
             fee_cost = 0.0
@@ -267,15 +303,28 @@ class HyperliquidExecutor(BaseExecutionProvider):
             
             return result
             
+        except _RETRIABLE as e:
+            # Retriable errors exhausted all retries — log prominently so alerts fire
+            logger.error(
+                "[Hyperliquid] execute() NETWORK FAILURE after %d retries for %s %s %s: %s",
+                _MAX_RETRIES, signal.side, signal.amount, signal.symbol, e,
+            )
+            return ExecutionResult(
+                order_id="network_error",
+                status="failed",
+                filled_amount=0,
+                avg_price=0,
+                timestamp=datetime.now(timezone.utc),
+            )
         except Exception as e:
-            print(f"Error executing Hyperliquid order: {e}")
-            # Devolver un resultado fallido
+            logger.error("[Hyperliquid] execute() unexpected error for %s %s %s: %s",
+                         signal.side, signal.amount, signal.symbol, e)
             return ExecutionResult(
                 order_id="error",
                 status="failed",
                 filled_amount=0,
                 avg_price=0,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
             )
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
