@@ -32,4 +32,4 @@ pytest>=8.1.0
 pytest-asyncio>=0.23.6
 
 # Reporting
-reportlab>=4.1.0
+reportlab>=4.5.1
