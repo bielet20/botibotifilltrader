@@ -29,4 +29,4 @@ python-dotenv>=1.0.1
 cryptography>=42.0.0
 
 # Reporting
-reportlab>=4.1.0
+reportlab>=4.5.1
